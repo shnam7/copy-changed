@@ -29,39 +29,19 @@ const { stat: realStat } =
 const { copyChanged } = await import("../src/index.ts");
 
 // -------------------------------------------------------------------------
-// NOTE: the implementation resolves each matched file's stat via a path
-// that is only correct when `process.cwd()` matches the `cwd` option (or
-// the `cwd` option is omitted). All tests below therefore run with the
-// process cwd switched to the directory under test.
 
-let originalCwd: string;
 let tmpRoot: string;
 let srcDir: string;
 let destDir: string;
-let relDest: string; // relative path to destination.
-
-function readDest(pathName: string) {
-  return readFile(path.join(relDest, pathName), "utf8");
-}
 
 beforeEach(async () => {
-  originalCwd = process.cwd();
-
-  // tmpRoot = await mkdtemp(path.join(os.tmpdir(), "copy-changed-"));
-  // tmpRoot = path.join(import.meta.dirname, "data");
   tmpRoot = await mkdtemp(path.join(os.tmpdir(), "copy-changed-"));
-  srcDir = "src";
-  destDir = "dest";
-  relDest = path.relative(srcDir, destDir);
-
-  await mkdir(path.join(tmpRoot, srcDir), { recursive: true });
-  process.chdir(path.join(tmpRoot, srcDir));
-  // console.log(`=====5: cwd=${process.cwd()}`);
-  // console.log(`=====5: srcDir='${srcDir}' destDir='${destDir}' relDeat='${relDest}'`);
+  srcDir = path.join(tmpRoot, "src");
+  destDir = path.join(tmpRoot, "dest");
+  await mkdir(srcDir, { recursive: true });
 });
 
 afterEach(async () => {
-  process.chdir(originalCwd);
   statOverride = null;
   vi.restoreAllMocks();
   await rm(tmpRoot, { recursive: true, force: true });
@@ -69,65 +49,108 @@ afterEach(async () => {
 
 describe("copyChanged", () => {
   it("copies files that do not yet exist in dest", async () => {
-    await writeFile("a.txt", "hello");
-    const result = await copyChanged("*.txt", relDest, { logLevel: "silent" });
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+
+    const result = await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
 
     expect(result).toEqual({ copyCount: 1, skipCount: 0 });
-    const copied = await readDest("a.txt");
-    expect(copied).toBe("hello");
+    expect(await readFile(path.join(destDir, "a.txt"), "utf8")).toBe("hello");
   });
 
   it("copies files inside nested directories preserving structure", async () => {
-    await mkdir(path.join("nested", "deep"), { recursive: true });
-    await writeFile(path.join("nested", "deep", "b.txt"), "nested-content");
-    const result = await copyChanged("**/*.txt", relDest, { logLevel: "silent" });
+    await mkdir(path.join(srcDir, "nested", "deep"), { recursive: true });
+    await writeFile(path.join(srcDir, "nested", "deep", "b.txt"), "nested-content");
+
+    const result = await copyChanged("**/*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
+
     expect(result.copyCount).toBe(1);
-    const copied = await readDest(path.join("nested", "deep", "b.txt"));
-    expect(copied).toBe("nested-content");
+    expect(await readFile(path.join(destDir, "nested", "deep", "b.txt"), "utf8")).toBe(
+      "nested-content",
+    );
+  });
+
+  it("accepts an array of glob patterns", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "top-level");
+    await mkdir(path.join(srcDir, "other"), { recursive: true });
+    await writeFile(path.join(srcDir, "other", "b.txt"), "in-subdir");
+
+    const result = await copyChanged(["*.txt", "other/*.txt"], destDir, {
+      cwd: srcDir,
+      logLevel: "silent",
+    });
+
+    expect(result).toEqual({ copyCount: 2, skipCount: 0 });
+    expect(await readFile(path.join(destDir, "a.txt"), "utf8")).toBe("top-level");
+    expect(await readFile(path.join(destDir, "other", "b.txt"), "utf8")).toBe("in-subdir");
+  });
+
+  it("returns a no-op result for an empty src array (absorbed by the CopyParam[] branch)", async () => {
+    const result = await copyChanged([], destDir, { cwd: srcDir, logLevel: "silent" });
+    expect(result).toEqual({ copyCount: 0, skipCount: 0 });
+  });
+
+  it("returns a no-op result when src patterns are empty strings (delegated to tinyglobby)", async () => {
+    const result = await copyChanged([""], destDir, { cwd: srcDir, logLevel: "silent" });
+    expect(result).toEqual({ copyCount: 0, skipCount: 0 });
+  });
+
+  it("silently ignores clearDest for a single-file dest when logLevel is not verbose", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await writeFile(path.join(srcDir, "single.txt"), "content");
+    await mkdir(destDir, { recursive: true });
+    const destFile = path.join(destDir, "out.txt");
+    await writeFile(destFile, "placeholder");
+
+    await copyChanged("single.txt", destFile, {
+      cwd: srcDir,
+      clearDest: true,
+      logLevel: "silent",
+    });
+
+    expect(logSpy).not.toHaveBeenCalled();
   });
 
   it("skips files that are unchanged on a second run", async () => {
-    await writeFile("a.txt", "hello");
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
 
-    const first = await copyChanged("*.txt", relDest, { logLevel: "silent" });
+    const first = await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
     expect(first).toEqual({ copyCount: 1, skipCount: 0 });
 
-    const second = await copyChanged("*.txt", relDest, { logLevel: "silent" });
+    const second = await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
     expect(second).toEqual({ copyCount: 0, skipCount: 1 });
   });
 
   it("re-copies a file whose size changed even if mtime looks older", async () => {
-    await writeFile("a.txt", "hello");
-    await copyChanged("*.txt", relDest, { logLevel: "silent" });
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
 
-    // Make the dest file look newer than src, but give it a different size.
-    const destPath = path.join(relDest, "a.txt");
+    const destPath = path.join(destDir, "a.txt");
     const future = new Date(Date.now() + 10_000);
     await writeFile(destPath, "a-completely-different-length-of-content");
     await utimes(destPath, future, future);
 
-    const result = await copyChanged("*.txt", relDest, { logLevel: "silent" });
+    const result = await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
     expect(result).toEqual({ copyCount: 1, skipCount: 0 });
   });
 
   it("re-copies a file whose mtime changed even if size is identical", async () => {
-    await writeFile("a.txt", "hello");
-    await copyChanged("*.txt", relDest, { logLevel: "silent" });
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
 
-    // Touch the source so it looks newer than dest, keep the same length.
-    const srcPath = "./a.txt";
+    const srcPath = path.join(srcDir, "a.txt");
     const future = new Date(Date.now() + 10_000);
     await utimes(srcPath, future, future);
 
-    const result = await copyChanged("*.txt", relDest, { logLevel: "silent" });
+    const result = await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
     expect(result).toEqual({ copyCount: 1, skipCount: 0 });
   });
 
   it("force option always copies regardless of change detection", async () => {
-    await writeFile("a.txt", "hello");
-    await copyChanged("*.txt", relDest, { logLevel: "silent" });
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
 
-    const result = await copyChanged("*.txt", relDest, {
+    const result = await copyChanged("*.txt", destDir, {
+      cwd: srcDir,
       force: true,
       logLevel: "silent",
     });
@@ -135,56 +158,40 @@ describe("copyChanged", () => {
   });
 
   it("clearDest=true removes all existing files in dest before copying", async () => {
-    // del's own safety check refuses to delete anything outside process.cwd(),
-    // so these use a dest directory nested inside srcDir (which is also
-    // process.cwd() for the duration of the test, see beforeEach).
-    const nestedDest = "out";
-    await writeFile("a.txt", "hello");
-    await mkdir(nestedDest, { recursive: true });
-    await writeFile(path.join(nestedDest, "stray.txt"), "should be removed");
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await mkdir(destDir, { recursive: true });
+    await writeFile(path.join(destDir, "stray.txt"), "should be removed");
 
-    const result = await copyChanged("*.txt", nestedDest, {
+    const result = await copyChanged("*.txt", destDir, {
+      cwd: srcDir,
       clearDest: true,
       logLevel: "silent",
     });
 
     expect(result.copyCount).toBe(1);
-    await expect(readDest(path.join(nestedDest, "stray.txt"))).rejects.toThrow();
+    await expect(readFile(path.join(destDir, "stray.txt"), "utf8")).rejects.toThrow();
   });
 
   it("clearDest with a single glob string deletes only matching files", async () => {
-    // del's own safety check refuses to delete anything outside process.cwd(),
-    // so these use a dest directory nested inside srcDir (which is also
-    // process.cwd() for the duration of the test, see beforeEach).
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await mkdir(destDir, { recursive: true });
+    await writeFile(path.join(destDir, "old.txt"), "old");
+    await writeFile(path.join(destDir, "keep.json"), "{}");
 
-    const nestedDest = "out";
-    await writeFile("a.txt", "hello");
-    await mkdir(nestedDest, { recursive: true });
-    await writeFile(path.join(nestedDest, "old.txt"), "old");
-    await writeFile(path.join(nestedDest, "keep.json"), "{}");
+    await copyChanged("*.txt", destDir, { cwd: srcDir, clearDest: "*.txt", logLevel: "silent" });
 
-    await copyChanged("*.txt", nestedDest, {
-      clearDest: "*.txt",
-      logLevel: "silent",
-    });
-
-    await expect(readFile(path.join(nestedDest, "old.txt"), "utf-8")).rejects.toThrow();
-    const kept = await readFile(path.join(nestedDest, "keep.json"), "utf-8");
-    expect(kept).toBe("{}");
+    await expect(readFile(path.join(destDir, "old.txt"), "utf8")).rejects.toThrow();
+    expect(await readFile(path.join(destDir, "keep.json"), "utf8")).toBe("{}");
   });
 
   it("clearDest with an array including a negated pattern runs without error", async () => {
-    // del's own safety check refuses to delete anything outside process.cwd(),
-    // so these use a dest directory nested inside srcDir (which is also
-    // process.cwd() for the duration of the test, see beforeEach).
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await mkdir(destDir, { recursive: true });
+    await writeFile(path.join(destDir, "old.txt"), "old");
+    await writeFile(path.join(destDir, "keep.txt"), "keep me");
 
-    const nestedDest = "out";
-    await writeFile("a.txt", "hello");
-    await mkdir(nestedDest, { recursive: true });
-    await writeFile(path.join(nestedDest, "old.txt"), "old");
-    await writeFile(path.join(nestedDest, "keep.txt"), "keep me");
-
-    const result = await copyChanged("*.txt", nestedDest, {
+    const result = await copyChanged("*.txt", destDir, {
+      cwd: srcDir,
       clearDest: ["*.txt", "!keep.txt"],
       logLevel: "silent",
     });
@@ -192,148 +199,217 @@ describe("copyChanged", () => {
     expect(result.copyCount).toBe(1);
   });
 
-  it("logs a verbose message when emptying the dest directory", async () => {
-    // del's own safety check refuses to delete anything outside process.cwd(),
-    // so these use a dest directory nested inside srcDir (which is also
-    // process.cwd() for the duration of the test, see beforeEach).
-
-    const nestedDest = "out";
+  it("logs a verbose message when clearing the dest directory", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    await writeFile("a.txt", "hello");
-    await mkdir(nestedDest, { recursive: true });
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await mkdir(destDir, { recursive: true });
 
-    await copyChanged("*.txt", nestedDest, {
-      clearDest: true,
-      logLevel: "verbose",
-    });
+    await copyChanged("*.txt", destDir, { cwd: srcDir, clearDest: true, logLevel: "verbose" });
 
     const messages = logSpy.mock.calls.map((call) => call.join(" "));
     expect(messages.some((m) => m.includes("target directory cleaned"))).toBe(true);
   });
 
+  it("ignores clearDest with a verbose warning when dest is a single file", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await writeFile(path.join(srcDir, "single.txt"), "content");
+    await mkdir(destDir, { recursive: true });
+    const destFile = path.join(destDir, "out.txt");
+    await writeFile(destFile, "placeholder");
+
+    await copyChanged("single.txt", destFile, {
+      cwd: srcDir,
+      clearDest: true,
+      logLevel: "verbose",
+    });
+
+    const messages = logSpy.mock.calls.map((call) => call.join(" "));
+    expect(messages.some((m) => m.includes("clearDest ignored"))).toBe(true);
+  });
+
   it("logs verbose copy and skip messages", async () => {
-    await writeFile("a.txt", "hello");
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-    await copyChanged("*.txt", relDest, { logLevel: "verbose" });
+    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "verbose" });
     let messages = logSpy.mock.calls.map((call) => call.join(" "));
     expect(messages.some((m) => m.includes("a.txt -> "))).toBe(true);
 
     logSpy.mockClear();
-    await copyChanged("*.txt", relDest, { logLevel: "verbose" });
+    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "verbose" });
     messages = logSpy.mock.calls.map((call) => call.join(" "));
     expect(messages.some((m) => m.startsWith("[SKIP]"))).toBe(true);
   });
 
   it("prints a summary line by default (normal log level)", async () => {
-    await writeFile("a.txt", "hello");
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-    await copyChanged("*.txt", relDest);
+    await copyChanged("*.txt", destDir, { cwd: srcDir });
 
     const messages = logSpy.mock.calls.map((call) => call.join(" "));
     expect(messages.some((m) => m.includes("1 file(s) copied"))).toBe(true);
   });
 
   it("suppresses the summary line when logLevel is silent", async () => {
-    await writeFile("a.txt", "hello");
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-    await copyChanged("*.txt", relDest, { logLevel: "silent" });
+    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
 
     expect(logSpy).not.toHaveBeenCalled();
   });
 
-  it("copies a single named file into an existing destination file's directory", async () => {
-    // This case needs cwd to be tmpRoot (the parent of both src and dest),
-    // and a src path expressed relative to that cwd.
-    process.chdir(tmpRoot);
-
+  it("copies a single named file to an explicit destination file path", async () => {
     await writeFile(path.join(srcDir, "single.txt"), "single-content");
-    const srcFile = path.join(srcDir, "single.txt");
+    const destFile = path.join(destDir, "renamed.txt");
 
-    // Pre-create dest as a file (not a directory).
+    const result = await copyChanged("single.txt", destFile, { cwd: srcDir, logLevel: "silent" });
+
+    expect(result.copyCount).toBe(1);
+    expect(await readFile(destFile, "utf8")).toBe("single-content");
+  });
+
+  it("copies a single named file into an existing destination file's directory", async () => {
+    await writeFile(path.join(srcDir, "single.txt"), "single-content");
     await mkdir(destDir, { recursive: true });
     const destFile = path.join(destDir, "placeholder.txt");
     await writeFile(destFile, "placeholder");
 
-    const result = await copyChanged(srcFile, destFile, {
-      cwd: tmpRoot,
-      logLevel: "silent",
-    });
+    const result = await copyChanged("single.txt", destFile, { cwd: srcDir, logLevel: "silent" });
 
     expect(result.copyCount).toBe(1);
-    const copied = await readFile(path.join(destDir, "placeholder.txt"), "utf8");
-    expect(copied).toBe("single-content");
+    expect(await readFile(destFile, "utf8")).toBe("single-content");
   });
 
   it("throws when dest is an existing file but src is a glob pattern", async () => {
-    await writeFile("a.txt", "hello");
-    await mkdir(relDest, { recursive: true });
-    const destFile = path.join(relDest, "placeholder.txt");
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await mkdir(destDir, { recursive: true });
+    const destFile = path.join(destDir, "placeholder.txt");
     await writeFile(destFile, "placeholder");
 
-    await expect(copyChanged("*.txt", destFile, { logLevel: "silent" })).rejects.toThrow(
-      /Glob pattern cannot be copied to file/,
-    );
+    await expect(
+      copyChanged("*.txt", destFile, { cwd: srcDir, logLevel: "silent" }),
+    ).rejects.toThrow(/Glob pattern cannot be copied to file/);
+  });
+
+  it("throws when dest is an existing file but src is an array with more than one pattern", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await writeFile(path.join(srcDir, "b.txt"), "world");
+    await mkdir(destDir, { recursive: true });
+    const destFile = path.join(destDir, "placeholder.txt");
+    await writeFile(destFile, "placeholder");
+
+    await expect(
+      copyChanged(["a.txt", "b.txt"], destFile, { cwd: srcDir, logLevel: "silent" }),
+    ).rejects.toThrow(/Glob pattern cannot be copied to file/);
+  });
+
+  it("treats a non-existent dest without an extension as a directory", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const freshDest = path.join(tmpRoot, "brand-new-dir");
+
+    const result = await copyChanged("*.txt", freshDest, { cwd: srcDir, logLevel: "silent" });
+
+    expect(result.copyCount).toBe(1);
+    expect(await readFile(path.join(freshDest, "a.txt"), "utf8")).toBe("hello");
   });
 
   it("uses process.cwd() when no cwd option is supplied", async () => {
-    // beforeEach already chdir'd into srcDir.
-    await writeFile("a.txt", "hello");
-
-    const result = await copyChanged("*.txt", destDir, { logLevel: "silent" });
-    expect(result.copyCount).toBe(1);
+    const originalCwd = process.cwd();
+    process.chdir(srcDir);
+    try {
+      await writeFile(path.join(srcDir, "a.txt"), "hello");
+      const result = await copyChanged("*.txt", destDir, { logLevel: "silent" });
+      expect(result.copyCount).toBe(1);
+    } finally {
+      process.chdir(originalCwd);
+    }
   });
 
-  it("rethrows a non-ENOENT error from the initial dest stat check", async () => {
-    await writeFile("a.txt", "hello");
+  it("accepts a single CopyParam object", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
 
-    const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" });
-    statOverride = (async (target: Parameters<StatFn>[0]) => {
-      // console.log(`=====555: ${target} ${relDest}`);
-      if (target === relDest) throw permissionError;
-      return realStat(target);
-    }) as StatFn;
+    const result = await copyChanged({
+      src: "*.txt",
+      dest: destDir,
+      options: { cwd: srcDir, logLevel: "silent" },
+    });
 
-    await expect(copyChanged("*.txt", relDest, { logLevel: "silent" })).rejects.toThrow(
-      "permission denied",
-    );
+    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
+    expect(await readFile(path.join(destDir, "a.txt"), "utf8")).toBe("hello");
   });
 
-  it("rethrows a non-ENOENT error from the per-file dest stat check", async () => {
-    await writeFile("a.txt", "hello");
-    await mkdir(relDest, { recursive: true });
+  it("accepts an array of CopyParam objects and sums the results", async () => {
+    const srcDir2 = path.join(tmpRoot, "src2");
+    const destDir2 = path.join(tmpRoot, "dest2");
+    await mkdir(srcDir2, { recursive: true });
+    await writeFile(path.join(srcDir, "a.txt"), "from-1");
+    await writeFile(path.join(srcDir2, "b.txt"), "from-2");
+
+    const result = await copyChanged([
+      { src: "*.txt", dest: destDir, options: { cwd: srcDir, logLevel: "silent" } },
+      { src: "*.txt", dest: destDir2, options: { cwd: srcDir2, logLevel: "silent" } },
+    ]);
+
+    expect(result).toEqual({ copyCount: 2, skipCount: 0 });
+    expect(await readFile(path.join(destDir, "a.txt"), "utf8")).toBe("from-1");
+    expect(await readFile(path.join(destDir2, "b.txt"), "utf8")).toBe("from-2");
+  });
+
+  it("returns a no-op result for an empty array of CopyParam objects", async () => {
+    const result = await copyChanged([]);
+    expect(result).toEqual({ copyCount: 0, skipCount: 0 });
+  });
+
+  it("does not mutate process.cwd() and supports concurrent calls with different cwd options", async () => {
+    const originalCwd = process.cwd();
+    const srcDir2 = path.join(tmpRoot, "src2");
+    const destDir2 = path.join(tmpRoot, "dest2");
+    await mkdir(srcDir2, { recursive: true });
+    await writeFile(path.join(srcDir, "a.txt"), "from-1");
+    await writeFile(path.join(srcDir2, "b.txt"), "from-2");
+
+    const [result1, result2] = await Promise.all([
+      copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" }),
+      copyChanged("*.txt", destDir2, { cwd: srcDir2, logLevel: "silent" }),
+    ]);
+
+    expect(result1).toEqual({ copyCount: 1, skipCount: 0 });
+    expect(result2).toEqual({ copyCount: 1, skipCount: 0 });
+    expect(await readFile(path.join(destDir, "a.txt"), "utf8")).toBe("from-1");
+    expect(await readFile(path.join(destDir2, "b.txt"), "utf8")).toBe("from-2");
+    expect(process.cwd()).toBe(originalCwd);
+  });
+
+  it("rethrows a non-ENOENT error from the per-file stat check", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await mkdir(destDir, { recursive: true });
 
     const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" });
-    const destFilePath = path.join(relDest, "a.txt");
+    const destFilePath = path.join(destDir, "a.txt");
     statOverride = (async (target: Parameters<StatFn>[0]) => {
       if (target === destFilePath) throw permissionError;
       return realStat(target);
     }) as StatFn;
 
-    await expect(copyChanged("*.txt", relDest, { logLevel: "silent" })).rejects.toThrow(
-      "permission denied",
-    );
+    await expect(
+      copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" }),
+    ).rejects.toThrow("permission denied");
   });
 
-  it("supports an array of glob patterns including negative patterns", async () => {
-    const nestedSrc = "deep";
-    await mkdir(nestedSrc, { recursive: true });
+  it("rethrows a non-ENOENT error from the initial dest-directory check", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const freshDest = path.join(tmpRoot, "brand-new-dir");
 
-    await writeFile(path.join(nestedSrc, "index.html"), "<html></html>");
-    await writeFile(path.join(nestedSrc, "main.ts"), "console.log('main');");
-    await writeFile(path.join(nestedSrc, "style.css"), "body {}");
+    const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    statOverride = (async (target: Parameters<StatFn>[0]) => {
+      if (target === freshDest) throw permissionError;
+      return realStat(target);
+    }) as StatFn;
 
-    const srcGlob = ["**", "!**/index.html"];
-    const result = await copyChanged(srcGlob, relDest, { logLevel: "silent" });
-    expect(result).toEqual({ copyCount: 2, skipCount: 0 });
-
-    const copiedTs = await readDest("deep/main.ts");
-    const copiedCss = await readDest("deep/style.css");
-
-    expect(copiedTs).toBe("console.log('main');");
-    expect(copiedCss).toBe("body {}");
-    await expect(readDest("deep/index.html")).rejects.toThrow();
+    await expect(
+      copyChanged("*.txt", freshDest, { cwd: srcDir, logLevel: "silent" }),
+    ).rejects.toThrow("permission denied");
   });
 });
