@@ -1,6 +1,7 @@
 import { copyFile, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import chalk from "chalk";
+import commonPathPrefix from "common-path-prefix";
 import { deleteAsync } from "del";
 import globParent from "glob-parent";
 import { glob, isDynamicPattern } from "tinyglobby";
@@ -45,6 +46,26 @@ const arrayify = <T>(value: T | readonly T[]): T[] =>
 const isCopyParam = (value: unknown): value is CopyParam =>
   typeof value === "object" && value !== null && !Array.isArray(value) && "src" in value;
 
+const stripTrailingSep = (p: string): string => (p.endsWith(path.sep) ? p.slice(0, -1) : p);
+
+/**
+ * Resolves the base directory that matched files' relative paths are
+ * computed against, given one or more absolute glob-parent directories.
+ *  - A single (or repeated) parent is used as-is.
+ *  - Multiple distinct parents fall back to their longest common ancestor
+ *    directory, so patterns pointing at sibling subdirectories (e.g.
+ *    'dirA/*.txt' and 'dirB/*.txt') still preserve their relative
+ *    structure under dest. If the parents share no ancestor besides the
+ *    filesystem root, `cwd` is used instead.
+ */
+const resolveGlobBase = (parents: string[], cwd: string): string => {
+  const uniqueParents = [...new Set(parents)];
+  if (uniqueParents.length === 1) return uniqueParents[0] as string;
+
+  const prefix = stripTrailingSep(commonPathPrefix(uniqueParents));
+  return prefix || cwd;
+};
+
 /**
  * Check whether pathName is a directory.
  *  - If pathName exists on disk, returns whether it's a directory.
@@ -73,8 +94,10 @@ const isDirectory = async (pathName: string): Promise<boolean> => {
  *
  * Note:
  *  If dest is a file, then src should also be a single file, not a glob.
- *  If src is an array of globs, then the globBase is derived from the
- *  first one, src[0].
+ *  If src is an array of globs, the base directory used to preserve each
+ *  matched file's relative path is the longest common ancestor directory
+ *  of all the patterns' glob-parents (falling back to cwd if they share
+ *  none besides the filesystem root).
  *
  * @param src Source pattern(s), a glob string or an array of glob strings (input to tinyglobby)
  * @param dest Destination directory or a file.
@@ -160,7 +183,10 @@ export async function copyChanged(
   }
 
   const files = await glob([...srcPatterns], { cwd });
-  const globBase = path.resolve(cwd, globParent(srcPatterns[0] as string, {}));
+  const globBase = resolveGlobBase(
+    srcPatterns.map((pattern) => path.resolve(cwd, globParent(pattern, {}))),
+    cwd,
+  );
 
   for await (const file of files) {
     const srcFile = path.resolve(cwd, file);

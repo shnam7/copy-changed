@@ -84,6 +84,22 @@ describe("copyChanged", () => {
     expect(await readFile(path.join(destDir, "other", "b.txt"), "utf8")).toBe("in-subdir");
   });
 
+  it("falls back to cwd as the glob base when patterns share no common ancestor", async () => {
+    // Two absolute patterns whose parents diverge right at the filesystem
+    // root: commonPathPrefix() collapses to "" in that case, and
+    // resolveGlobBase() should fall back to `cwd` instead of throwing.
+    const result = await copyChanged(
+      ["/copy-changed-root-a/*.txt", "/copy-changed-root-b/*.txt"],
+      destDir,
+      {
+        cwd: srcDir,
+        logLevel: "silent",
+      },
+    );
+
+    expect(result).toEqual({ copyCount: 0, skipCount: 0 });
+  });
+
   it("returns a no-op result for an empty src array (absorbed by the CopyParam[] branch)", async () => {
     const result = await copyChanged([], destDir, { cwd: srcDir, logLevel: "silent" });
     expect(result).toEqual({ copyCount: 0, skipCount: 0 });
