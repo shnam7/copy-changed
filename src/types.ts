@@ -30,6 +30,8 @@ export interface CopyOptions {
   // options to tinyglobby.
   globOptions?: GlobOptions;
 
+  dryRun?: boolean;
+
   //----- hooks for customization. Each defaults to the matching
   // `default*` export below (mostly responsible for `logLevel` output);
   // supplying your own fully replaces the default for that event. Hooks

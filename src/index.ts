@@ -13,11 +13,19 @@ import {
 } from "./hooks";
 import type { CopyOptions, CopyParam, CopyResult } from "./types";
 
+export type { CopyOptions, CopyParam, CopyResult };
+export { defaultOnCheckChanged, defaultOnClearDest, defaultOnCopy, defaultOnFinish, defaultOnSkip };
+
+//----- Internal functions -----
 const arrayify = <T>(value: T | readonly T[]): T[] =>
   Array.isArray(value) ? [...value] : [value as T];
 
 const isCopyParam = (value: unknown): value is CopyParam =>
-  typeof value === "object" && value !== null && !Array.isArray(value) && "src" in value;
+  typeof value === "object" &&
+  value !== null &&
+  !Array.isArray(value) &&
+  "src" in value &&
+  "dest" in value;
 
 const stripTrailingSep = (p: string): string => (p.endsWith(path.sep) ? p.slice(0, -1) : p);
 
@@ -125,6 +133,7 @@ export async function copyChanged(
     force: false,
     logLevel: "normal",
     globOptions: {},
+    dryRun: false,
     onCheckChanged: defaultOnCheckChanged,
     onClearDest: defaultOnClearDest,
     onCopy: defaultOnCopy,
@@ -154,23 +163,35 @@ export async function copyChanged(
   if (opts.clearDest) {
     if (isDestDirectory) {
       const clearDest = opts.clearDest === true ? ["*"] : arrayify(opts.clearDest);
-      const delPatterns = clearDest.map((pattern) =>
-        pattern.startsWith("!")
-          ? `!${path.join(destBase, pattern.slice(1))}`
-          : path.join(destBase, pattern),
-      );
+      const delPatterns = clearDest.map((pattern) => {
+        const isNegated = pattern.startsWith("!");
+        const cleanPattern = isNegated ? pattern.slice(1) : pattern;
+        const fullPath = path.join(destBase, cleanPattern).replace(/\\/g, "/");
+        return isNegated ? `!${fullPath}` : fullPath;
+      });
+      // const delPatterns = clearDest.map((pattern) =>
+      //   pattern.startsWith("!")
+      //     ? `!${path.join(destBase, pattern.slice(1))}`
+      //     : path.join(destBase, pattern),
+      // );
 
-      await deleteAsync(delPatterns, { cwd: destBase });
+      if (!opts.dryRun) await deleteAsync(delPatterns, { cwd: destBase });
       await opts.onClearDest(delPatterns, opts);
     } else {
-      await deleteAsync(destAbs, { cwd: destBase });
+      if (!opts.dryRun) await deleteAsync(destAbs, { cwd: destBase });
       await opts.onClearDest([destAbs], opts);
     }
   }
 
   const files = await glob([...srcPatterns], { ...opts.globOptions, cwd });
   const globBase = resolveGlobBase(
-    srcPatterns.map((pattern) => path.resolve(cwd, globParent(pattern, {}))),
+    // srcPatterns.map((pattern) => path.resolve(cwd, globParent(pattern, {}))),
+    srcPatterns.map((pattern) => {
+      // globParent expects POSIX style slash(/).
+      const normalizedPattern = pattern.replace(/\\/g, "/");
+      const parent = globParent(normalizedPattern, {});
+      return path.resolve(cwd, parent);
+    }),
     cwd,
   );
 
@@ -181,8 +202,10 @@ export async function copyChanged(
     const destDir = path.dirname(destFile);
 
     if (opts.force || (await opts.onCheckChanged(srcFile, destFile, opts))) {
-      await mkdir(destDir, { recursive: true });
-      await copyFile(srcFile, destFile);
+      if (!opts.dryRun) {
+        await mkdir(destDir, { recursive: true });
+        await copyFile(srcFile, destFile);
+      }
       result.copyCount++;
       await opts.onCopy(srcFile, destFile, opts);
     } else {

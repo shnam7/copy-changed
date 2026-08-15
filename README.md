@@ -1,6 +1,6 @@
 # copy-changed
 
-A Node.js utility that copies only changed files from source to destination.
+A Node.js utility library that copies only changed files from source to destination.
 It compares file modification time and size to determine whether a file should be copied, helping reduce redundant work in build or sync tasks.
 
 ## Features

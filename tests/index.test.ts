@@ -641,3 +641,20 @@ describe("copyChanged - CopyParam overload", () => {
     expect(result).toEqual({ copyCount: 0, skipCount: 0 });
   });
 });
+
+describe("copy & mkdir dryRun execution logic", () => {
+  it("does NOT create destDir or copy files when dryRun is true", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const nonExistentDestDir = path.join(tmpRoot, "new-dest-dir");
+
+    const result = await copyChanged("*.txt", nonExistentDestDir, {
+      cwd: srcDir,
+      dryRun: true,
+      logLevel: "silent",
+    });
+
+    // 1. 카운트는 증가하지만 실제 디렉터리가 생성되지 않았는지 검증
+    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
+    await expect(stat(nonExistentDestDir)).rejects.toThrow();
+  });
+});
