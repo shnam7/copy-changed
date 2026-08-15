@@ -1,44 +1,17 @@
 import { copyFile, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
-import chalk from "chalk";
 import commonPathPrefix from "common-path-prefix";
 import { deleteAsync } from "del";
 import globParent from "glob-parent";
 import { glob, isDynamicPattern } from "tinyglobby";
-
-const headerInfo = chalk.green("[copy-changed]");
-const headerWarn = chalk.red("[copy-changed]");
-
-export interface CopyParam {
-  src: string | readonly string[];
-  dest: string;
-  options?: CopyOptions;
-}
-
-export interface CopyOptions {
-  // current working directory. Only used to resolve relative `src`/`dest`
-  // paths - never mutates the actual process cwd, so concurrent calls
-  // (e.g. via Promise.all) are safe.
-  cwd?: string;
-
-  /*
-    If true, empty whole dest.
-    If glob, delete matched files only within the dest folder. (using del module).
-    The glob should be relative path from the dest.
-    Ignored (with a verbose warning) when dest resolves to a single file.
-  */
-  clearDest?: boolean | string | readonly string[];
-
-  // overwrite the destination. default is false.
-  force?: boolean;
-
-  logLevel?: "normal" | "verbose" | "silent";
-}
-
-export interface CopyResult {
-  copyCount: number;
-  skipCount: number;
-}
+import {
+  defaultOnCheckChanged,
+  defaultOnClearDest,
+  defaultOnCopy,
+  defaultOnFinish,
+  defaultOnSkip,
+} from "./hooks";
+import type { CopyOptions, CopyParam, CopyResult } from "./types";
 
 const arrayify = <T>(value: T | readonly T[]): T[] =>
   Array.isArray(value) ? [...value] : [value as T];
@@ -146,9 +119,22 @@ export async function copyChanged(
   // array was already absorbed by the CopyParam[] branch above), and dest is
   // defined. Validating individual pattern strings (e.g. an empty string) is
   // left to tinyglobby/glob-parent, which already handle that gracefully.
-  const srcPatterns = arrayify(arg1 as string | readonly string[]);
+  const opts: Required<CopyOptions> = {
+    cwd: process.cwd(),
+    clearDest: false,
+    force: false,
+    logLevel: "normal",
+    globOptions: {},
+    onCheckChanged: defaultOnCheckChanged,
+    onClearDest: defaultOnClearDest,
+    onCopy: defaultOnCopy,
+    onSkip: defaultOnSkip,
+    onFinish: defaultOnFinish,
+    ...options,
+  };
 
-  const cwd = options.cwd ? path.resolve(options.cwd) : process.cwd();
+  const srcPatterns = arrayify(arg1 as string | readonly string[]);
+  const cwd = path.resolve(opts.cwd);
   const destAbs = path.resolve(cwd, dest as string);
   const isDestDirectory = await isDirectory(destAbs);
   const destBase = isDestDirectory ? destAbs : path.dirname(destAbs);
@@ -165,9 +151,9 @@ export async function copyChanged(
   }
 
   // Handle clearDest option.
-  if (options.clearDest) {
+  if (opts.clearDest) {
     if (isDestDirectory) {
-      const clearDest = options.clearDest === true ? ["*"] : arrayify(options.clearDest);
+      const clearDest = opts.clearDest === true ? ["*"] : arrayify(opts.clearDest);
       const delPatterns = clearDest.map((pattern) =>
         pattern.startsWith("!")
           ? `!${path.join(destBase, pattern.slice(1))}`
@@ -175,14 +161,14 @@ export async function copyChanged(
       );
 
       await deleteAsync(delPatterns, { cwd: destBase });
-      if (options.logLevel === "verbose")
-        console.log(`${headerWarn} target directory cleaned: '${delPatterns.join(",")}'.`);
-    } else if (options.logLevel === "verbose") {
-      console.log(`${headerWarn} clearDest ignored: dest '${destAbs}' is a single file.`);
+      await opts.onClearDest(delPatterns, opts);
+    } else {
+      await deleteAsync(destAbs, { cwd: destBase });
+      await opts.onClearDest([destAbs], opts);
     }
   }
 
-  const files = await glob([...srcPatterns], { cwd });
+  const files = await glob([...srcPatterns], { ...opts.globOptions, cwd });
   const globBase = resolveGlobBase(
     srcPatterns.map((pattern) => path.resolve(cwd, globParent(pattern, {}))),
     cwd,
@@ -194,39 +180,17 @@ export async function copyChanged(
     const destFile = isSingleFileCopy ? destAbs : path.join(destBase, variablePath);
     const destDir = path.dirname(destFile);
 
-    let isChanged = options.force === true;
-
-    if (!isChanged) {
-      try {
-        const [destStat, srcStat] = await Promise.all([stat(destFile), stat(srcFile)]);
-        const isTimeChanged = srcStat.mtimeMs > destStat.mtimeMs;
-        const isSizeChanged = srcStat.size !== destStat.size;
-        isChanged = isTimeChanged || isSizeChanged;
-      } catch (error) {
-        if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-          isChanged = true; // dest file does not exist.
-        } else {
-          throw error;
-        }
-      }
-    }
-
-    if (isChanged) {
+    if (opts.force || (await opts.onCheckChanged(srcFile, destFile, opts))) {
       await mkdir(destDir, { recursive: true });
       await copyFile(srcFile, destFile);
       result.copyCount++;
-      if (options.logLevel === "verbose") console.log(`[copy-changed] ${srcFile} -> ${destFile}`);
+      await opts.onCopy(srcFile, destFile, opts);
     } else {
       result.skipCount++;
-      if (options.logLevel === "verbose") console.log(`[SKIP] ${srcFile} -> ${destFile}`);
+      await opts.onSkip(srcFile, destFile, opts);
     }
   }
 
-  if (options.logLevel !== "silent") {
-    console.log(
-      `${headerInfo}: ${result.copyCount} file(s) copied, ${result.skipCount} file(s) skipped.`,
-    );
-  }
-
+  await opts.onFinish(result, opts);
   return result;
 }
