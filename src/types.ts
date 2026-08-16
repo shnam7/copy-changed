@@ -1,4 +1,5 @@
 import type { GlobOptions } from "tinyglobby";
+import type { Logger } from "ts-log";
 
 export interface CopyParam {
   src: string | readonly string[];
@@ -25,6 +26,8 @@ export interface CopyOptions {
   // overwrite the destination. default is false.
   force?: boolean;
 
+  logger?: Logger;
+
   logLevel?: "normal" | "verbose" | "silent";
 
   // options to tinyglobby.
@@ -41,20 +44,28 @@ export interface CopyOptions {
   onCheckChanged?: (
     srcFile: string,
     destFile: string,
-    options: CopyOptions,
+    options: Required<CopyOptions>,
   ) => boolean | Promise<boolean>;
 
   // called after clearing dest.
-  onClearDest?: (delPatterns: string[], options: CopyOptions) => void | Promise<void>;
+  onClearDest?: (delPatterns: string[], options: Required<CopyOptions>) => void | Promise<void>;
 
   // called after each copy operation.
-  onCopy?: (srcFile: string, destFile: string, options: CopyOptions) => void | Promise<void>;
+  onCopy?: (
+    srcFile: string,
+    destFile: string,
+    options: Required<CopyOptions>,
+  ) => void | Promise<void>;
 
   // called after each skipped operation.
-  onSkip?: (srcFile: string, destFile: string, options: CopyOptions) => void | Promise<void>;
+  onSkip?: (
+    srcFile: string,
+    destFile: string,
+    options: Required<CopyOptions>,
+  ) => void | Promise<void>;
 
   // called at the end of whole operation.
-  onFinish?: (result: CopyResult, options: CopyOptions) => void | Promise<void>;
+  onFinish?: (result: CopyResult, options: Required<CopyOptions>) => void | Promise<void>;
 }
 
 export interface CopyResult {

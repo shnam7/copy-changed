@@ -1,6 +1,5 @@
-import { copyFile, mkdir, stat } from "node:fs/promises";
+import { copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
-import commonPathPrefix from "common-path-prefix";
 import { deleteAsync } from "del";
 import globParent from "glob-parent";
 import { glob, isDynamicPattern } from "tinyglobby";
@@ -12,61 +11,23 @@ import {
   defaultOnSkip,
 } from "./hooks";
 import type { CopyOptions, CopyParam, CopyResult } from "./types";
+import {
+  arrayify,
+  createLogger,
+  getDefaultLogger,
+  isCopyParam,
+  isDirectory,
+  resolveGlobBase,
+} from "./utils";
 
 export type { CopyOptions, CopyParam, CopyResult };
-export { defaultOnCheckChanged, defaultOnClearDest, defaultOnCopy, defaultOnFinish, defaultOnSkip };
-
-//----- Internal functions -----
-const arrayify = <T>(value: T | readonly T[]): T[] =>
-  Array.isArray(value) ? [...value] : [value as T];
-
-const isCopyParam = (value: unknown): value is CopyParam =>
-  typeof value === "object" &&
-  value !== null &&
-  !Array.isArray(value) &&
-  "src" in value &&
-  "dest" in value;
-
-const stripTrailingSep = (p: string): string => (p.endsWith(path.sep) ? p.slice(0, -1) : p);
-
-/**
- * Resolves the base directory that matched files' relative paths are
- * computed against, given one or more absolute glob-parent directories.
- *  - A single (or repeated) parent is used as-is.
- *  - Multiple distinct parents fall back to their longest common ancestor
- *    directory, so patterns pointing at sibling subdirectories (e.g.
- *    'dirA/*.txt' and 'dirB/*.txt') still preserve their relative
- *    structure under dest. If the parents share no ancestor besides the
- *    filesystem root, `cwd` is used instead.
- */
-const resolveGlobBase = (parents: string[], cwd: string): string => {
-  const uniqueParents = [...new Set(parents)];
-  if (uniqueParents.length === 1) return uniqueParents[0] as string;
-
-  const prefix = stripTrailingSep(commonPathPrefix(uniqueParents));
-  return prefix || cwd;
-};
-
-/**
- * Check whether pathName is a directory.
- *  - If pathName exists on disk, returns whether it's a directory.
- *  - If it doesn't exist, guesses based on a trailing '/' or a missing
- *    extension (e.g. 'dest/' or 'dest' -> directory, 'dest.txt' -> file).
- *    Note: this heuristic can misclassify intentionally extension-less
- *    files such as '.env', 'Makefile', or 'LICENSE' as directories.
- *
- * @param pathName Absolute path to check.
- */
-const isDirectory = async (pathName: string): Promise<boolean> => {
-  try {
-    const stats = await stat(pathName);
-    return stats.isDirectory();
-  } catch (error) {
-    if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
-      return pathName.endsWith(path.sep) || path.extname(pathName).length === 0;
-    }
-    throw error;
-  }
+export {
+  createLogger,
+  defaultOnCheckChanged,
+  defaultOnClearDest,
+  defaultOnCopy,
+  defaultOnFinish,
+  defaultOnSkip,
 };
 
 /**
@@ -131,6 +92,7 @@ export async function copyChanged(
     cwd: process.cwd(),
     clearDest: false,
     force: false,
+    logger: getDefaultLogger(),
     logLevel: "normal",
     globOptions: {},
     dryRun: false,
@@ -169,11 +131,6 @@ export async function copyChanged(
         const fullPath = path.join(destBase, cleanPattern).replace(/\\/g, "/");
         return isNegated ? `!${fullPath}` : fullPath;
       });
-      // const delPatterns = clearDest.map((pattern) =>
-      //   pattern.startsWith("!")
-      //     ? `!${path.join(destBase, pattern.slice(1))}`
-      //     : path.join(destBase, pattern),
-      // );
 
       if (!opts.dryRun) await deleteAsync(delPatterns, { cwd: destBase });
       await opts.onClearDest(delPatterns, opts);
@@ -185,7 +142,6 @@ export async function copyChanged(
 
   const files = await glob([...srcPatterns], { ...opts.globOptions, cwd });
   const globBase = resolveGlobBase(
-    // srcPatterns.map((pattern) => path.resolve(cwd, globParent(pattern, {}))),
     srcPatterns.map((pattern) => {
       // globParent expects POSIX style slash(/).
       const normalizedPattern = pattern.replace(/\\/g, "/");

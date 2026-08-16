@@ -1,6 +1,6 @@
 # copy-changed
 
-A Node.js utility library that copies only changed files from source to destination.
+A Node.js utility that copies only changed files from source to destination.
 It compares file modification time and size to determine whether a file should be copied, helping reduce redundant work in build or sync tasks.
 
 ## Features
@@ -9,6 +9,8 @@ It compares file modification time and size to determine whether a file should b
 - Glob support using **[tinyglobby](https://github.com/SuperchupuDev/tinyglobby)**.
 - Preserves relative directory structure, finding the common glob parent using **[common-path-prefix](https://github.com/novemberborn/common-path-prefix)**.
 - Selective destination clearing with glob support.
+- Dry-run mode to preview what would be copied/cleared without touching the filesystem.
+- Pluggable logging via any [`ts-log`](https://github.com/dscheerens/ts-log) compatible logger.
 - Customizable via hooks - override change detection, or add your own logging/side effects.
 - Safe for concurrent calls.
 
@@ -43,6 +45,17 @@ await copyChanged([
   { src: "src/**/*.js", dest: "dist/js" },
   { src: "src/**/*.css", dest: "dist/css", options: { force: true } },
 ]);
+```
+
+### Preview with Dry Run
+
+```ts
+const { copyCount, skipCount } = await copyChanged("src/**/*.js", "dist", {
+  dryRun: true,
+  logLevel: "verbose",
+});
+// Nothing on disk changes - `copyCount`/`skipCount` and the verbose log
+// describe what a real run would do.
 ```
 
 ## API
@@ -81,13 +94,15 @@ interface CopyOptions {
   cwd?: string;
   clearDest?: boolean | string | readonly string[];
   force?: boolean;
+  logger?: Logger; // from the `ts-log` package
   logLevel?: "normal" | "verbose" | "silent";
   globOptions?: GlobOptions;
-  onCheckChanged?: (srcFile: string, destFile: string, options: CopyOptions) => boolean | Promise<boolean>;
-  onClearDest?: (delPatterns: string[], options: CopyOptions) => void | Promise<void>;
-  onCopy?: (srcFile: string, destFile: string, options: CopyOptions) => void | Promise<void>;
-  onSkip?: (srcFile: string, destFile: string, options: CopyOptions) => void | Promise<void>;
-  onFinish?: (result: CopyResult, options: CopyOptions) => void | Promise<void>;
+  dryRun?: boolean;
+  onCheckChanged?: (srcFile: string, destFile: string, options: Required<CopyOptions>) => boolean | Promise<boolean>;
+  onClearDest?: (delPatterns: string[], options: Required<CopyOptions>) => void | Promise<void>;
+  onCopy?: (srcFile: string, destFile: string, options: Required<CopyOptions>) => void | Promise<void>;
+  onSkip?: (srcFile: string, destFile: string, options: Required<CopyOptions>) => void | Promise<void>;
+  onFinish?: (result: CopyResult, options: Required<CopyOptions>) => void | Promise<void>;
 }
 ```
 
@@ -102,6 +117,10 @@ interface CopyOptions {
 - **force**: If `true`, always overwrite destination files.
   - Default: `false`
 
+- **logger**: A [`ts-log`](https://github.com/dscheerens/ts-log) compatible logger (`trace`/`debug`/`info`/`warn`/`error`), used by the default hooks below to print `logLevel` output. Falls back to a shared, lazily-created `pino` + `pino-pretty` logger if you don't supply one - it's only constructed once per process, not once per call.
+  - If you bring your own logger, note that the `"[copy-changed]"` prefix is added by `createLogger`'s `pino-pretty` formatting, not by the log calls themselves - a custom logger won't include it automatically.
+  - Default: the shared default logger (see [Logging](#logging)).
+
 - **logLevel**: Controls logging verbosity.
   - `"normal"`: summary only
   - `"verbose"`: detailed per-file logs
@@ -110,6 +129,10 @@ interface CopyOptions {
   - Ignored for any event that has a custom hook (see [Hooks](#hooks)).
 
 - **globOptions**: options to tinyglobby.
+
+- **dryRun**: If `true`, skips every filesystem mutation - `clearDest`'s delete, `mkdir`, and the actual file copy - while still running change detection, hooks, and returning the `CopyResult` that describes what would have happened.
+  - Caveat: when combined with `clearDest`, the preview does not simulate the deletion - `onCheckChanged` still compares against files that are still on disk, so a file `clearDest` would remove (and thus force a real copy) may be reported as "skipped" here.
+  - Default: `false`
 
 - **onCheckChanged**, **onClearDest**, **onCopy**, **onSkip**, **onFinish**: optional hooks. See [Hooks](#hooks).
 
@@ -128,13 +151,15 @@ interface CopyResult {
 
 Each hook fully replaces the default behavior for its event - including the built-in `logLevel` output - so if you supply a hook, you're responsible for any logging it should do. Hooks may be sync or async; async hooks are awaited before `copyChanged` continues.
 
-| Hook             | Called                                                         | Signature                                                     |
-| ---------------- | -------------------------------------------------------------- | ------------------------------------------------------------- |
-| `onCheckChanged` | To decide whether a matched file should be copied              | `(srcFile, destFile, options) => boolean \| Promise<boolean>` |
-| `onClearDest`    | After `clearDest` removes files (or the single dest file)      | `(delPatterns, options) => void \| Promise<void>`             |
-| `onCopy`         | After a file is copied                                         | `(srcFile, destFile, options) => void \| Promise<void>`       |
-| `onSkip`         | After a file is skipped (unchanged)                            | `(srcFile, destFile, options) => void \| Promise<void>`       |
-| `onFinish`       | Once, after all files are processed - regardless of `logLevel` | `(result, options) => void \| Promise<void>`                  |
+| Hook             | Called                                                         | Signature                                                                            |
+| ---------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `onCheckChanged` | To decide whether a matched file should be copied              | `(srcFile, destFile, options: Required<CopyOptions>) => boolean \| Promise<boolean>` |
+| `onClearDest`    | After `clearDest` removes files (or the single dest file)      | `(delPatterns, options: Required<CopyOptions>) => void \| Promise<void>`             |
+| `onCopy`         | After a file is copied                                         | `(srcFile, destFile, options: Required<CopyOptions>) => void \| Promise<void>`       |
+| `onSkip`         | After a file is skipped (unchanged)                            | `(srcFile, destFile, options: Required<CopyOptions>) => void \| Promise<void>`       |
+| `onFinish`       | Once, after all files are processed - regardless of `logLevel` | `(result, options: Required<CopyOptions>) => void \| Promise<void>`                  |
+
+All hooks receive the fully-resolved `Required<CopyOptions>` (defaults already applied), not the partial options you passed in - so e.g. `options.logger` and `options.cwd` are always defined inside a hook.
 
 ```ts
 await copyChanged("src/**/*.js", "dist", {
@@ -162,6 +187,23 @@ await copyChanged("src/**/*.js", "dist", {
 ```
 
 Available as `defaultOnCheckChanged`, `defaultOnClearDest`, `defaultOnCopy`, `defaultOnSkip`, and `defaultOnFinish`.
+
+## Logging
+
+By default, `copyChanged` logs through a lazily-created, process-wide shared [`pino`](https://github.com/pinojs/pino) + [`pino-pretty`](https://github.com/pinojs/pino-pretty) logger (exported as `createLogger`). It's only constructed the first time it's needed and then reused - calling `copyChanged` (or running a `CopyParam[]` batch) many times does not spin up a new logger each time.
+
+You can supply your own logger instead - anything satisfying [`ts-log`](https://github.com/dscheerens/ts-log)'s `Logger` interface (`trace`/`debug`/`info`/`warn`/`error`) works, including `console`, `winston`, `bunyan`, or a test double:
+
+```ts
+import { copyChanged } from "copy-changed";
+
+await copyChanged("src/**/*.js", "dist", {
+  logLevel: "verbose",
+  logger: console, // any ts-log-compatible logger
+});
+```
+
+Note that the `"[copy-changed]"` prefix and colorized output in the [example below](#example-output-verbose-mode) come from `createLogger`'s `pino-pretty` formatting - a custom logger prints messages as-is, without that prefix.
 
 ## Notes
 

@@ -7,6 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // We keep the real implementation by default, but allow individual tests
 // to inject a custom `stat` behavior (e.g. to simulate a permission error)
 // for a specific path while every other path still resolves normally.
+// Note: index.ts, hooks.ts, and utils.ts all import `stat` from
+// "node:fs/promises", but vi.mock intercepts the module by specifier, so
+// this single mock covers all three internal modules.
 type StatFn = typeof import("node:fs/promises").stat;
 let statOverride: StatFn | null = null;
 
@@ -27,6 +30,18 @@ const { stat: realStat } =
   await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
 
 const { copyChanged } = await import("../src/index.ts");
+const { getDefaultLogger } = await import("../src/utils.ts");
+
+// A minimal mock satisfying ts-log's `Logger` interface, so verbose/warn
+// output can be asserted on directly instead of trying to intercept
+// pino-pretty's worker-thread-based stdout writes.
+const createMockLogger = () => ({
+  trace: vi.fn(),
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+});
 
 // -------------------------------------------------------------------------
 
@@ -314,15 +329,20 @@ describe("copyChanged - clearDest", () => {
   });
 
   it("logs a verbose message when clearing the dest directory", async () => {
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const logger = createMockLogger();
     await writeFile(path.join(srcDir, "a.txt"), "hello");
     await mkdir(destDir, { recursive: true });
 
-    await copyChanged("*.txt", destDir, { cwd: srcDir, clearDest: true, logLevel: "verbose" });
+    await copyChanged("*.txt", destDir, {
+      cwd: srcDir,
+      clearDest: true,
+      logLevel: "verbose",
+      logger,
+    });
 
-    const messages = logSpy.mock.calls.map((call) => call.join(" "));
-    expect(messages.some((m) => m.includes("cleaned") && m.includes(path.join(destDir, "*")))).toBe(
-      true,
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining(`cleaned: '${path.join(destDir, "*")}'`),
     );
   });
 
@@ -379,7 +399,7 @@ describe("copyChanged - clearDest", () => {
   });
 
   it("logs a verbose message when clearing a single-file dest", async () => {
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const logger = createMockLogger();
     await writeFile(path.join(srcDir, "single.txt"), "content");
     await mkdir(destDir, { recursive: true });
     const destFile = path.join(destDir, "out.txt");
@@ -389,10 +409,10 @@ describe("copyChanged - clearDest", () => {
       cwd: srcDir,
       clearDest: true,
       logLevel: "verbose",
+      logger,
     });
 
-    const messages = logSpy.mock.calls.map((call) => call.join(" "));
-    expect(messages.some((m) => m.includes("cleaned") && m.includes(destFile))).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining(`cleaned: '${destFile}'`));
   });
 
   it("calls onClearDest with the deleted path for a single-file dest", async () => {
@@ -414,38 +434,155 @@ describe("copyChanged - clearDest", () => {
   });
 });
 
-describe("copyChanged - logging", () => {
-  it("logs verbose copy and skip messages", async () => {
+describe("copyChanged - dryRun", () => {
+  it("does not create the dest file or directory, but still reports the copy", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "verbose" });
-    let messages = logSpy.mock.calls.map((call) => call.join(" "));
-    expect(messages.some((m) => m.includes("Copy: ") && m.includes("a.txt"))).toBe(true);
+    const result = await copyChanged("*.txt", destDir, {
+      cwd: srcDir,
+      dryRun: true,
+      logLevel: "silent",
+    });
 
-    logSpy.mockClear();
-    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "verbose" });
-    messages = logSpy.mock.calls.map((call) => call.join(" "));
-    expect(messages.some((m) => m.includes("Skip: "))).toBe(true);
+    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
+    // Neither the dest directory nor the file inside it should exist.
+    await expect(readFile(path.join(destDir, "a.txt"), "utf8")).rejects.toThrow();
+  });
+
+  it("still calls onCopy/onSkip in dry-run mode", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const onCopy = vi.fn();
+
+    await copyChanged("*.txt", destDir, {
+      cwd: srcDir,
+      dryRun: true,
+      logLevel: "silent",
+      onCopy,
+    });
+
+    expect(onCopy).toHaveBeenCalledTimes(1);
+    expect(onCopy).toHaveBeenCalledWith(
+      path.join(srcDir, "a.txt"),
+      path.join(destDir, "a.txt"),
+      expect.anything(),
+    );
+  });
+
+  it("does not delete anything when combined with clearDest (directory dest)", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await mkdir(destDir, { recursive: true });
+    await writeFile(path.join(destDir, "stray.txt"), "should survive the dry run");
+
+    await copyChanged("*.txt", destDir, {
+      cwd: srcDir,
+      clearDest: true,
+      dryRun: true,
+      logLevel: "silent",
+    });
+
+    expect(await readFile(path.join(destDir, "stray.txt"), "utf8")).toBe(
+      "should survive the dry run",
+    );
+  });
+
+  it("does not delete the dest file when combined with clearDest (single-file dest)", async () => {
+    await writeFile(path.join(srcDir, "single.txt"), "new-content");
+    await mkdir(destDir, { recursive: true });
+    const destFile = path.join(destDir, "out.txt");
+    await writeFile(destFile, "should survive the dry run");
+
+    await copyChanged("single.txt", destFile, {
+      cwd: srcDir,
+      clearDest: true,
+      dryRun: true,
+      logLevel: "silent",
+    });
+
+    expect(await readFile(destFile, "utf8")).toBe("should survive the dry run");
+  });
+
+  it("force still reports a copy without writing anything", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" }); // real copy first
+
+    const result = await copyChanged("*.txt", destDir, {
+      cwd: srcDir,
+      force: true,
+      dryRun: true,
+      logLevel: "silent",
+    });
+
+    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
+    // The dest file from the earlier real copy is untouched (still "hello").
+    expect(await readFile(path.join(destDir, "a.txt"), "utf8")).toBe("hello");
+  });
+
+  it("a subsequent real run still copies normally after a dry run", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+
+    await copyChanged("*.txt", destDir, { cwd: srcDir, dryRun: true, logLevel: "silent" });
+    await expect(readFile(path.join(destDir, "a.txt"), "utf8")).rejects.toThrow();
+
+    const result = await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
+    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
+    expect(await readFile(path.join(destDir, "a.txt"), "utf8")).toBe("hello");
+  });
+});
+
+describe("copyChanged - logging", () => {
+  it("reuses a single shared default logger instance across calls (no per-call re-instantiation)", () => {
+    expect(getDefaultLogger()).toBe(getDefaultLogger());
+  });
+
+  it("logs verbose copy and skip messages via the supplied logger", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const logger = createMockLogger();
+
+    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "verbose", logger });
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("Copy: "));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining(path.join(srcDir, "a.txt")));
+
+    logger.info.mockClear();
+    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "verbose", logger });
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("Skip: "));
   });
 
   it("prints a summary line by default (normal log level)", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const logger = createMockLogger();
 
-    await copyChanged("*.txt", destDir, { cwd: srcDir });
+    await copyChanged("*.txt", destDir, { cwd: srcDir, logger });
 
-    const messages = logSpy.mock.calls.map((call) => call.join(" "));
-    expect(messages.some((m) => m.includes("1 file(s) copied"))).toBe(true);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.stringContaining("1 file(s) copied, 0 file(s) skipped"),
+    );
   });
 
-  it("suppresses the summary line when logLevel is silent", async () => {
+  it("suppresses all logger calls when logLevel is silent", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const logger = createMockLogger();
 
-    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
+    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent", logger });
 
-    expect(logSpy).not.toHaveBeenCalled();
+    expect(logger.info).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("a custom logger does not receive calls for events overridden by a custom hook", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const logger = createMockLogger();
+
+    await copyChanged("*.txt", destDir, {
+      cwd: srcDir,
+      logLevel: "verbose",
+      logger,
+      onCopy: vi.fn(),
+    });
+
+    // onCopy fully replaces the default (which would have logged "Copy: ..."),
+    // but onFinish is still the default and should still log the summary.
+    expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining("Copy: "));
+    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("file(s) copied"));
   });
 });
 
@@ -581,14 +718,15 @@ describe("copyChanged - event handlers", () => {
 
   it("calls onFinish with the final result even when logLevel is silent", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const logger = createMockLogger();
     const onFinish = vi.fn();
 
-    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent", onFinish });
+    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent", logger, onFinish });
 
     expect(onFinish).toHaveBeenCalledTimes(1);
     expect(onFinish).toHaveBeenCalledWith({ copyCount: 1, skipCount: 0 }, expect.anything());
-    expect(logSpy).not.toHaveBeenCalled();
+    // A custom onFinish replaces the default summary log entirely.
+    expect(logger.info).not.toHaveBeenCalled();
   });
 
   it("awaits an async onFinish handler before returning", async () => {
@@ -639,22 +777,5 @@ describe("copyChanged - CopyParam overload", () => {
   it("returns a no-op result for an empty array of CopyParam objects", async () => {
     const result = await copyChanged([]);
     expect(result).toEqual({ copyCount: 0, skipCount: 0 });
-  });
-});
-
-describe("copy & mkdir dryRun execution logic", () => {
-  it("does NOT create destDir or copy files when dryRun is true", async () => {
-    await writeFile(path.join(srcDir, "a.txt"), "hello");
-    const nonExistentDestDir = path.join(tmpRoot, "new-dest-dir");
-
-    const result = await copyChanged("*.txt", nonExistentDestDir, {
-      cwd: srcDir,
-      dryRun: true,
-      logLevel: "silent",
-    });
-
-    // 1. 카운트는 증가하지만 실제 디렉터리가 생성되지 않았는지 검증
-    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
-    await expect(stat(nonExistentDestDir)).rejects.toThrow();
   });
 });
