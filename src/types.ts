@@ -1,5 +1,5 @@
+import type { Logger } from "@wicle/tiny-logger";
 import type { GlobOptions } from "tinyglobby";
-import type { Logger } from "ts-log";
 
 export interface CopyParam {
   src: string | readonly string[];

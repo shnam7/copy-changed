@@ -117,8 +117,8 @@ interface CopyOptions {
 - **force**: If `true`, always overwrite destination files.
   - Default: `false`
 
-- **logger**: A [`ts-log`](https://github.com/dscheerens/ts-log) compatible logger (`trace`/`debug`/`info`/`warn`/`error`), used by the default hooks below to print `logLevel` output. Falls back to a shared, lazily-created `pino` + `pino-pretty` logger if you don't supply one - it's only constructed once per process, not once per call.
-  - If you bring your own logger, note that the `"[copy-changed]"` prefix is added by `createLogger`'s `pino-pretty` formatting, not by the log calls themselves - a custom logger won't include it automatically.
+- **logger**: A [`ts-log`](https://github.com/dscheerens/ts-log) compatible logger (`trace`/`debug`/`info`/`warn`/`error`), used by the default hooks below to print `logLevel` output. Falls back to a shared, lazily-created [`consola`](https://github.com/unjs/consola) logger if you don't supply one - it's only constructed once per process, not once per call.
+  - If you bring your own logger, note that the `"[copy-changed]"` prefix comes from `createLogger`'s `consola.withTag()`, not from the log calls themselves - a custom logger won't include it automatically.
   - Default: the shared default logger (see [Logging](#logging)).
 
 - **logLevel**: Controls logging verbosity.
@@ -190,9 +190,8 @@ Available as `defaultOnCheckChanged`, `defaultOnClearDest`, `defaultOnCopy`, `de
 
 ## Logging
 
-By default, `copyChanged` logs through a lazily-created, process-wide shared [`pino`](https://github.com/pinojs/pino) + [`pino-pretty`](https://github.com/pinojs/pino-pretty) logger (exported as `createLogger`). It's only constructed the first time it's needed and then reused - calling `copyChanged` (or running a `CopyParam[]` batch) many times does not spin up a new logger each time.
-
-You can supply your own logger instead - anything satisfying [`ts-log`](https://github.com/dscheerens/ts-log)'s `Logger` interface (`trace`/`debug`/`info`/`warn`/`error`) works, including `console`, `winston`, `bunyan`, or a test double:
+`copyChanged` uses [`[pino]`](https://github.com/pinojs/pino) and exposes
+its Logger interface to support custom logger.
 
 ```ts
 import { copyChanged } from "copy-changed";
@@ -203,7 +202,7 @@ await copyChanged("src/**/*.js", "dist", {
 });
 ```
 
-Note that the `"[copy-changed]"` prefix and colorized output in the [example below](#example-output-verbose-mode) come from `createLogger`'s `pino-pretty` formatting - a custom logger prints messages as-is, without that prefix.
+Note that the `"[copy-changed]"` prefix and styled output in the [example below](#example-output-verbose-mode) come from `createLogger`'s `consola.withTag()` - a custom logger prints messages as-is, without that prefix.
 
 ## Notes
 
@@ -229,9 +228,9 @@ copyChanged("src/a.txt", "dest.txt");
 ## Example Output (verbose mode)
 
 ```sh
-[copy-changed]: Copy: src/app.js -> dist/app.js
-[copy-changed]: Skip: src/util.js -> dist/util.js
-[copy-changed]: 1 file(s) copied, 1 file(s) skipped.
+[copy-changed] i Copy: src/app.js -> dist/app.js
+[copy-changed] i Skip: src/util.js -> dist/util.js
+[copy-changed] i 1 file(s) copied, 1 file(s) skipped.
 ```
 
 ## License

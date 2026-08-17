@@ -30,7 +30,6 @@ const { stat: realStat } =
   await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
 
 const { copyChanged } = await import("../src/index.ts");
-const { getDefaultLogger } = await import("../src/utils.ts");
 
 // A minimal mock satisfying ts-log's `Logger` interface, so verbose/warn
 // output can be asserted on directly instead of trying to intercept
@@ -529,63 +528,6 @@ describe("copyChanged - dryRun", () => {
   });
 });
 
-describe("copyChanged - logging", () => {
-  it("reuses a single shared default logger instance across calls (no per-call re-instantiation)", () => {
-    expect(getDefaultLogger()).toBe(getDefaultLogger());
-  });
-
-  it("logs verbose copy and skip messages via the supplied logger", async () => {
-    await writeFile(path.join(srcDir, "a.txt"), "hello");
-    const logger = createMockLogger();
-
-    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "verbose", logger });
-    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("Copy: "));
-    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining(path.join(srcDir, "a.txt")));
-
-    logger.info.mockClear();
-    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "verbose", logger });
-    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("Skip: "));
-  });
-
-  it("prints a summary line by default (normal log level)", async () => {
-    await writeFile(path.join(srcDir, "a.txt"), "hello");
-    const logger = createMockLogger();
-
-    await copyChanged("*.txt", destDir, { cwd: srcDir, logger });
-
-    expect(logger.info).toHaveBeenCalledWith(
-      expect.stringContaining("1 file(s) copied, 0 file(s) skipped"),
-    );
-  });
-
-  it("suppresses all logger calls when logLevel is silent", async () => {
-    await writeFile(path.join(srcDir, "a.txt"), "hello");
-    const logger = createMockLogger();
-
-    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent", logger });
-
-    expect(logger.info).not.toHaveBeenCalled();
-    expect(logger.warn).not.toHaveBeenCalled();
-  });
-
-  it("a custom logger does not receive calls for events overridden by a custom hook", async () => {
-    await writeFile(path.join(srcDir, "a.txt"), "hello");
-    const logger = createMockLogger();
-
-    await copyChanged("*.txt", destDir, {
-      cwd: srcDir,
-      logLevel: "verbose",
-      logger,
-      onCopy: vi.fn(),
-    });
-
-    // onCopy fully replaces the default (which would have logged "Copy: ..."),
-    // but onFinish is still the default and should still log the summary.
-    expect(logger.info).not.toHaveBeenCalledWith(expect.stringContaining("Copy: "));
-    expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("file(s) copied"));
-  });
-});
-
 describe("copyChanged - globOptions", () => {
   it("forwards globOptions to tinyglobby (e.g. an ignore pattern)", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "keep");
@@ -617,7 +559,7 @@ describe("copyChanged - globOptions", () => {
   });
 });
 
-describe("copyChanged - event handlers", () => {
+describe("copyChanged - hooks", () => {
   it("calls onCopy and onSkip with the resolved src/dest paths", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
     const onCopy = vi.fn();

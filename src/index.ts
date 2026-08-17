@@ -1,5 +1,6 @@
 import { copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import { getDefaultLogger } from "@wicle/tiny-logger";
 import { deleteAsync } from "del";
 import globParent from "glob-parent";
 import { glob, isDynamicPattern } from "tinyglobby";
@@ -11,24 +12,10 @@ import {
   defaultOnSkip,
 } from "./hooks";
 import type { CopyOptions, CopyParam, CopyResult } from "./types";
-import {
-  arrayify,
-  createLogger,
-  getDefaultLogger,
-  isCopyParam,
-  isDirectory,
-  resolveGlobBase,
-} from "./utils";
+import { arrayify, isCopyParam, isDirectory, resolveGlobBase } from "./utils";
 
 export type { CopyOptions, CopyParam, CopyResult };
-export {
-  createLogger,
-  defaultOnCheckChanged,
-  defaultOnClearDest,
-  defaultOnCopy,
-  defaultOnFinish,
-  defaultOnSkip,
-};
+export { defaultOnCheckChanged, defaultOnClearDest, defaultOnCopy, defaultOnFinish, defaultOnSkip };
 
 /**
  * Copy changed files to destination directory.

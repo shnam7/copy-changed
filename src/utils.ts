@@ -1,8 +1,6 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import commonPathPrefix from "common-path-prefix";
-import pino from "pino";
-import type { Logger } from "ts-log";
 import type { CopyParam } from "./types";
 
 //----- Internal functions -----
@@ -57,30 +55,3 @@ export const isDirectory = async (pathName: string): Promise<boolean> => {
     throw error;
   }
 };
-
-export function createLogger(prefix: string): Logger {
-  return pino({
-    level: "trace",
-    transport: {
-      target: "pino-pretty",
-      options: {
-        colorize: true,
-        translateTime: "SYS:HH:MM:ss",
-        ignore: "pid,hostname,prefix",
-        messageFormat: "[{prefix}] {msg}",
-        customColors:
-          "trace:gray,debug:blue,info:green,warn:yellow,error:red,fatal:bgRed,message:uncolored",
-      },
-    },
-  }).child({ prefix });
-}
-
-// The pino + pino-pretty transport is not cheap to construct (it spins up
-// a worker thread), so the default logger is built lazily, once per
-// process, and reused across every `copyChanged()` call that doesn't
-// supply its own `logger` - rather than re-created on every call/job.
-let defaultLogger: Logger | undefined;
-export function getDefaultLogger(): Logger {
-  defaultLogger ??= createLogger("copy-changed");
-  return defaultLogger;
-}
