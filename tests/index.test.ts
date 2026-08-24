@@ -108,9 +108,28 @@ describe("copyChanged - core behavior", () => {
     expect(result).toEqual({ copyCount: 0, skipCount: 0 });
   });
 
-  it("returns a no-op result for an empty src array (absorbed by the CopyParam[] branch)", async () => {
-    const result = await copyChanged([], destDir, { cwd: srcDir, logLevel: "silent" });
+  it("returns a no-op result for an empty src array but still clears dest", async () => {
+    await mkdir(destDir, { recursive: true });
+    await writeFile(path.join(destDir, "stray.txt"), "should be removed");
+
+    const result = await copyChanged([], destDir, {
+      cwd: srcDir,
+      clearDest: true,
+      logLevel: "silent",
+    });
+
     expect(result).toEqual({ copyCount: 0, skipCount: 0 });
+    // Regression check: an empty srcPatterns array must not be swallowed
+    // by the CopyParam[] branch - clearDest still has to run. See the
+    // `dest === undefined` disambiguation in copyChangedAsync.ts.
+    await expect(readFile(path.join(destDir, "stray.txt"), "utf8")).rejects.toThrow();
+  });
+
+  it("does not throw when called as copyChanged([]) with no dest (CopyParam[] overload)", async () => {
+    // Regression check: the single-argument params overload must still
+    // treat an empty array as zero CopyParam's, not fall through to the
+    // srcPatterns path (where a missing `dest` would throw).
+    await expect(copyChanged([])).resolves.toEqual({ copyCount: 0, skipCount: 0 });
   });
 
   it("returns a no-op result when src patterns are empty strings (delegated to tinyglobby)", async () => {
@@ -719,5 +738,25 @@ describe("copyChanged - CopyParam overload", () => {
   it("returns a no-op result for an empty array of CopyParam objects", async () => {
     const result = await copyChanged([]);
     expect(result).toEqual({ copyCount: 0, skipCount: 0 });
+  });
+
+  it("ignores an extraneous dest argument when arg1 is clearly a CopyParam array", async () => {
+    // Outside the typed API (TS never lets a caller pass both a
+    // CopyParam[] and a dest), but if it happens anyway - e.g. from
+    // plain JS - the array's own content must win over the stray
+    // argument, not the other way around.
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const ignoredDest = path.join(tmpRoot, "should-be-ignored");
+
+    // that TypeScript's overloads don't allow, to exercise the runtime
+    // fallback path.
+    const result = await (copyChanged as (...args: unknown[]) => Promise<unknown>)(
+      [{ src: "*.txt", dest: destDir, options: { cwd: srcDir, logLevel: "silent" } }],
+      ignoredDest,
+    );
+
+    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
+    expect(await readFile(path.join(destDir, "a.txt"), "utf8")).toBe("hello");
+    await expect(readFile(ignoredDest, "utf8")).rejects.toThrow();
   });
 });

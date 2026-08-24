@@ -38,7 +38,10 @@ export interface CopyOptions {
   //----- hooks for customization. Each defaults to the matching
   // `default*` export below (mostly responsible for `logLevel` output);
   // supplying your own fully replaces the default for that event. Hooks
-  // may be sync or async - async hooks are awaited before continuing.
+  // may be sync or async: copyChanged (async) awaits either kind, but
+  // copyChangedSync cannot await a Promise - if a hook returns one there,
+  // copyChangedSync logs a warning and falls back to a safe default
+  // instead of awaiting it (see copyChangedSync.ts).
 
   // test if file is changed.
   onCheckChanged?: (

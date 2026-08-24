@@ -58,6 +58,20 @@ const { copyCount, skipCount } = await copyChanged("src/**/*.js", "dist", {
 // describe what a real run would do.
 ```
 
+### Synchronous API
+
+`copyChangedSync` mirrors `copyChanged` exactly - same overloads, same `CopyOptions`, same `CopyResult` - but every filesystem call happens synchronously, for build scripts and other places `await` isn't available:
+
+```ts
+import { copyChangedSync } from "copy-changed";
+
+const { copyCount, skipCount } = copyChangedSync("src/**/*.js", "dist", {
+  logLevel: "verbose",
+});
+```
+
+See [Sync API hook constraints](#sync-api-hook-constraints) for how it handles hooks.
+
 ## API
 
 ### `copyChanged(src, dest, options)`
@@ -86,6 +100,10 @@ interface CopyParam {
   options?: CopyOptions;
 }
 ```
+
+### `copyChangedSync(src, dest, options)` / `copyChangedSync(params)`
+
+Synchronous counterpart of `copyChanged` above - same parameters, same overloads (a `src`/`dest`/`options` triple, or a single `CopyParam`/`CopyParam[]`), same `CopyOptions`, and it returns a `CopyResult` directly instead of a `Promise<CopyResult>`.
 
 ### `CopyOptions`
 
@@ -117,8 +135,7 @@ interface CopyOptions {
 - **force**: If `true`, always overwrite destination files.
   - Default: `false`
 
-- **logger**: A [`ts-log`](https://github.com/dscheerens/ts-log) compatible logger (`trace`/`debug`/`info`/`warn`/`error`), used by the default hooks below to print `logLevel` output. Falls back to a shared, lazily-created [`consola`](https://github.com/unjs/consola) logger if you don't supply one - it's only constructed once per process, not once per call.
-  - If you bring your own logger, note that the `"[copy-changed]"` prefix comes from `createLogger`'s `consola.withTag()`, not from the log calls themselves - a custom logger won't include it automatically.
+- **logger**: A [`ts-log`](https://github.com/dscheerens/ts-log) compatible logger (`trace`/`debug`/`info`/`warn`/`error`), used by the default hooks below to print `logLevel` output. Falls back to a shared, lazily-created default logger (from [`@wicle/tiny-logger`](https://github.com/shnam7/tiny-logger)) if you don't supply one - it's only constructed once per process, not once per call.
   - Default: the shared default logger (see [Logging](#logging)).
 
 - **logLevel**: Controls logging verbosity.
@@ -138,7 +155,7 @@ interface CopyOptions {
 
 ### `CopyResult`
 
-Returned by `copyChanged`:
+Returned by `copyChanged` (as a `Promise<CopyResult>`) and `copyChangedSync` (directly):
 
 ```ts
 interface CopyResult {
@@ -149,7 +166,7 @@ interface CopyResult {
 
 ## Hooks
 
-Each hook fully replaces the default behavior for its event - including the built-in `logLevel` output - so if you supply a hook, you're responsible for any logging it should do. Hooks may be sync or async; async hooks are awaited before `copyChanged` continues.
+Each hook fully replaces the default behavior for its event - including the built-in `logLevel` output - so if you supply a hook, you're responsible for any logging it should do. Hooks may be sync or async; `copyChanged` awaits either kind before continuing. `copyChangedSync` cannot await, so it expects synchronous hooks - see [Sync API hook constraints](#sync-api-hook-constraints).
 
 | Hook             | Called                                                         | Signature                                                                            |
 | ---------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
@@ -186,12 +203,26 @@ await copyChanged("src/**/*.js", "dist", {
 });
 ```
 
-Available as `defaultOnCheckChanged`, `defaultOnClearDest`, `defaultOnCopy`, `defaultOnSkip`, and `defaultOnFinish`.
+Available as `defaultOnCheckChanged` (for `copyChangedSync`), `defaultOnCheckChangedAsync` (for `copyChanged`), `defaultOnClearDest`, `defaultOnCopy`, `defaultOnSkip`, and `defaultOnFinish` - the last four are shared by both APIs.
+
+### Sync API hook constraints
+
+`copyChangedSync`'s hooks are typed the same as `copyChanged`'s (`T | Promise<T>`), so passing an async hook isn't a type error - but `copyChangedSync` cannot await one. If a hook declared with the `async` keyword is passed to `copyChangedSync`, its result is ignored, and a warning is logged once per hook, upfront, before any files are processed:
+
+```ts
+copyChangedSync("src/**/*.js", "dist", {
+  onCheckChanged: async (srcFile, destFile) => checkRemotely(srcFile, destFile), // ⚠️ warned and ignored
+});
+// logs: copyChangedSync: 'onCheckChanged' is an async function, but copyChangedSync
+// cannot await hooks - its result will be ignored. Pass a synchronous hook when
+// using copyChangedSync.
+```
+
+This detection only catches hooks declared with the `async` keyword - a plain function that manually returns a `Promise` (e.g. `() => somePromise`, with no `async` keyword) is not detected and will misbehave silently. Always use a genuinely synchronous hook with `copyChangedSync`.
 
 ## Logging
 
-`copyChanged` uses [`[pino]`](https://github.com/pinojs/pino) and exposes
-its Logger interface to support custom logger.
+By default, `copyChanged`/`copyChangedSync` log through a shared [`@wicle/tiny-logger`](https://github.com/shnam7/tiny-logger) instance, exposed via its [`ts-log`](https://github.com/dscheerens/ts-log) `Logger` interface - so you can supply any `ts-log`-compatible logger of your own instead.
 
 ```ts
 import { copyChanged } from "copy-changed";
@@ -202,7 +233,7 @@ await copyChanged("src/**/*.js", "dist", {
 });
 ```
 
-Note that the `"[copy-changed]"` prefix and styled output in the [example below](#example-output-verbose-mode) come from `createLogger`'s `consola.withTag()` - a custom logger prints messages as-is, without that prefix.
+The default logger's output (shown in the [example below](#example-output-verbose-mode)) is a timestamp and level tag, colorized when the terminal supports it - there's no `"[copy-changed]"` prefix or other tagging. A custom logger prints messages exactly as passed to it.
 
 ## Notes
 
@@ -228,9 +259,9 @@ copyChanged("src/a.txt", "dest.txt");
 ## Example Output (verbose mode)
 
 ```sh
-[copy-changed] i Copy: src/app.js -> dist/app.js
-[copy-changed] i Skip: src/util.js -> dist/util.js
-[copy-changed] i 1 file(s) copied, 1 file(s) skipped.
+10:32:19 AM INFO Copy: src/app.js -> dist/app.js
+10:32:19 AM INFO Skip: src/util.js -> dist/util.js
+10:32:19 AM INFO 1 file(s) copied, 1 file(s) skipped.
 ```
 
 ## License

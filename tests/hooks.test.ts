@@ -3,32 +3,59 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTempDirs, removeTempDirs, type TempDirs } from "./helpers/fixtures.ts";
 import { createMockLogger } from "./helpers/mockLogger.ts";
-import { getRealStat, makeStatErrorOverride, type StatFn } from "./helpers/statMock.ts";
+import {
+  getRealStat,
+  getRealStatSync,
+  makeStatErrorOverride,
+  makeStatSyncErrorOverride,
+  type StatFn,
+  type StatSyncFn,
+} from "./helpers/statMock.ts";
 
-const state = vi.hoisted(() => ({ override: null as StatFn | null }));
+const state = vi.hoisted(() => ({
+  statOverride: null as StatFn | null,
+  statSyncOverride: null as StatSyncFn | null,
+}));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
     stat: ((...args: Parameters<StatFn>) =>
-      state.override ? state.override(...args) : actual.stat(...args)) as StatFn,
+      state.statOverride ? state.statOverride(...args) : actual.stat(...args)) as StatFn,
   };
 });
 
-const { defaultOnCheckChanged, defaultOnClearDest, defaultOnCopy, defaultOnFinish, defaultOnSkip } =
-  await import("../src/hooks.ts");
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    statSync: ((...args: Parameters<StatSyncFn>) =>
+      state.statSyncOverride
+        ? state.statSyncOverride(...args)
+        : actual.statSync(...args)) as StatSyncFn,
+  };
+});
+
+const {
+  defaultOnCheckChanged,
+  defaultOnCheckChangedAsync,
+  defaultOnClearDest,
+  defaultOnCopy,
+  defaultOnFinish,
+  defaultOnSkip,
+} = await import("../src/hooks.ts");
 
 // Minimal `Required<CopyOptions>` stand-ins - only the fields each default
 // hook actually reads (`logLevel`, `logger`) need real values.
 const opts = (overrides: { logLevel?: "normal" | "verbose" | "silent"; logger?: unknown } = {}) =>
   ({ logLevel: "normal", logger: createMockLogger(), ...overrides }) as never;
 
-describe("defaultOnCheckChanged", () => {
+describe("defaultOnCheckChangedAsync", () => {
   let dirs: TempDirs;
 
   afterEach(async () => {
-    state.override = null;
+    state.statOverride = null;
     if (dirs) await removeTempDirs(dirs.tmpRoot);
   });
 
@@ -37,7 +64,11 @@ describe("defaultOnCheckChanged", () => {
     const srcFile = path.join(dirs.srcDir, "a.txt");
     await writeFile(srcFile, "hello");
 
-    const changed = await defaultOnCheckChanged(srcFile, path.join(dirs.destDir, "a.txt"), opts());
+    const changed = await defaultOnCheckChangedAsync(
+      srcFile,
+      path.join(dirs.destDir, "a.txt"),
+      opts(),
+    );
     expect(changed).toBe(true);
   });
 
@@ -50,7 +81,7 @@ describe("defaultOnCheckChanged", () => {
     await writeFile(destFile, "short");
     await utimes(destFile, new Date(Date.now() + 10_000), new Date(Date.now() + 10_000));
 
-    expect(await defaultOnCheckChanged(srcFile, destFile, opts())).toBe(true);
+    expect(await defaultOnCheckChangedAsync(srcFile, destFile, opts())).toBe(true);
   });
 
   it("returns true when the dest file's mtime is older than src", async () => {
@@ -62,7 +93,7 @@ describe("defaultOnCheckChanged", () => {
     await writeFile(srcFile, "hello");
     await utimes(srcFile, new Date(Date.now() + 10_000), new Date(Date.now() + 10_000));
 
-    expect(await defaultOnCheckChanged(srcFile, destFile, opts())).toBe(true);
+    expect(await defaultOnCheckChangedAsync(srcFile, destFile, opts())).toBe(true);
   });
 
   it("returns false when size and mtime both indicate no change", async () => {
@@ -76,7 +107,7 @@ describe("defaultOnCheckChanged", () => {
     await utimes(srcFile, t, t);
     await utimes(destFile, new Date(t.getTime() + 10_000), new Date(t.getTime() + 10_000));
 
-    expect(await defaultOnCheckChanged(srcFile, destFile, opts())).toBe(false);
+    expect(await defaultOnCheckChangedAsync(srcFile, destFile, opts())).toBe(false);
   });
 
   it("rethrows a non-ENOENT stat error", async () => {
@@ -88,11 +119,89 @@ describe("defaultOnCheckChanged", () => {
     await writeFile(destFile, "hello");
 
     const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" });
-    state.override = makeStatErrorOverride(destFile, permissionError, await getRealStat());
+    state.statOverride = makeStatErrorOverride(destFile, permissionError, await getRealStat());
 
-    await expect(defaultOnCheckChanged(srcFile, destFile, opts())).rejects.toThrow(
+    await expect(defaultOnCheckChangedAsync(srcFile, destFile, opts())).rejects.toThrow(
       "permission denied",
     );
+  });
+});
+
+// Same coverage as defaultOnCheckChangedAsync above, but against the
+// synchronous implementation (statSync via node:fs, not stat via
+// node:fs/promises) - see the "the one hook with genuinely different I/O"
+// comment in hooks.ts for why there are two separate implementations.
+describe("defaultOnCheckChanged", () => {
+  let dirs: TempDirs;
+
+  afterEach(async () => {
+    state.statSyncOverride = null;
+    if (dirs) await removeTempDirs(dirs.tmpRoot);
+  });
+
+  it("returns true when the dest file does not exist", async () => {
+    dirs = await createTempDirs();
+    const srcFile = path.join(dirs.srcDir, "a.txt");
+    await writeFile(srcFile, "hello");
+
+    const changed = defaultOnCheckChanged(srcFile, path.join(dirs.destDir, "a.txt"), opts());
+    expect(changed).toBe(true);
+  });
+
+  it("returns true when the dest file's size differs", async () => {
+    dirs = await createTempDirs();
+    const srcFile = path.join(dirs.srcDir, "a.txt");
+    const destFile = path.join(dirs.destDir, "a.txt");
+    await mkdir(dirs.destDir, { recursive: true });
+    await writeFile(srcFile, "a longer piece of content");
+    await writeFile(destFile, "short");
+    await utimes(destFile, new Date(Date.now() + 10_000), new Date(Date.now() + 10_000));
+
+    expect(defaultOnCheckChanged(srcFile, destFile, opts())).toBe(true);
+  });
+
+  it("returns true when the dest file's mtime is older than src", async () => {
+    dirs = await createTempDirs();
+    const srcFile = path.join(dirs.srcDir, "a.txt");
+    const destFile = path.join(dirs.destDir, "a.txt");
+    await mkdir(dirs.destDir, { recursive: true });
+    await writeFile(destFile, "hello");
+    await writeFile(srcFile, "hello");
+    await utimes(srcFile, new Date(Date.now() + 10_000), new Date(Date.now() + 10_000));
+
+    expect(defaultOnCheckChanged(srcFile, destFile, opts())).toBe(true);
+  });
+
+  it("returns false when size and mtime both indicate no change", async () => {
+    dirs = await createTempDirs();
+    const srcFile = path.join(dirs.srcDir, "a.txt");
+    const destFile = path.join(dirs.destDir, "a.txt");
+    await mkdir(dirs.destDir, { recursive: true });
+    await writeFile(srcFile, "hello");
+    await writeFile(destFile, "hello");
+    const t = new Date();
+    await utimes(srcFile, t, t);
+    await utimes(destFile, new Date(t.getTime() + 10_000), new Date(t.getTime() + 10_000));
+
+    expect(defaultOnCheckChanged(srcFile, destFile, opts())).toBe(false);
+  });
+
+  it("rethrows a non-ENOENT stat error", async () => {
+    dirs = await createTempDirs();
+    const srcFile = path.join(dirs.srcDir, "a.txt");
+    const destFile = path.join(dirs.destDir, "a.txt");
+    await mkdir(dirs.destDir, { recursive: true });
+    await writeFile(srcFile, "hello");
+    await writeFile(destFile, "hello");
+
+    const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    state.statSyncOverride = makeStatSyncErrorOverride(
+      destFile,
+      permissionError,
+      await getRealStatSync(),
+    );
+
+    expect(() => defaultOnCheckChanged(srcFile, destFile, opts())).toThrow("permission denied");
   });
 });
 
