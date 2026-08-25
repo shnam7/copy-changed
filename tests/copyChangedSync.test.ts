@@ -92,7 +92,7 @@ describe("copyChangedSync - core behavior", () => {
     expect(result).toEqual({ copyCount: 0, skipCount: 0 });
     // Regression check: an empty srcPatterns array must not be swallowed
     // by the CopyParam[] branch - clearDest still has to run. See the
-    // `dest === undefined` disambiguation in copyChangedSync.ts.
+    // `typeof arg2 !== "string"` disambiguation in copyChangedSync.ts.
     await expect(readFile(path.join(destDir, "stray.txt"), "utf8")).rejects.toThrow();
   });
 
@@ -101,6 +101,14 @@ describe("copyChangedSync - core behavior", () => {
     // treat an empty array as zero CopyParam's, not fall through to the
     // srcPatterns path (where a missing `dest` would throw).
     expect(copyChangedSync([])).toEqual({ copyCount: 0, skipCount: 0 });
+  });
+
+  it("does not throw when called as copyChangedSync([], defaultOptions) with no dest", () => {
+    // Regression check: `defaultOptions` (a CopyOptions object) in the
+    // second argument position must not be mistaken for `dest` (a
+    // string) - only a *string* second argument means the srcPatterns
+    // overload was actually called.
+    expect(copyChangedSync([], { logLevel: "silent" })).toEqual({ copyCount: 0, skipCount: 0 });
   });
 
   it("skips unchanged files and re-copies files that changed, on repeated runs", async () => {
@@ -428,6 +436,64 @@ describe("copyChangedSync - CopyParam overload", () => {
     expect(result).toEqual({ copyCount: 1, skipCount: 0 });
     expect(await readFile(path.join(destDir, "a.txt"), "utf8")).toBe("hello");
     await expect(readFile(ignoredDest, "utf8")).rejects.toThrow();
+  });
+});
+
+describe("copyChangedSync - defaultOptions (CopyParam overload)", () => {
+  it("applies defaultOptions to a single CopyParam", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const onCopy = vi.fn();
+
+    const result = copyChangedSync(
+      { src: "*.txt", dest: destDir, options: { cwd: srcDir } },
+      { logLevel: "silent", onCopy },
+    );
+
+    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
+    expect(onCopy).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets a CopyParam's own options override defaultOptions", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const defaultOnCopyHook = vi.fn();
+    const paramOnCopyHook = vi.fn();
+
+    copyChangedSync(
+      { src: "*.txt", dest: destDir, options: { cwd: srcDir, onCopy: paramOnCopyHook } },
+      { logLevel: "silent", onCopy: defaultOnCopyHook },
+    );
+
+    expect(paramOnCopyHook).toHaveBeenCalledTimes(1);
+    expect(defaultOnCopyHook).not.toHaveBeenCalled();
+  });
+
+  it("applies defaultOptions to every CopyParam in an array", async () => {
+    const srcDir2 = path.join(tmpRoot, "src2");
+    const destDir2 = path.join(tmpRoot, "dest2");
+    await mkdir(srcDir2, { recursive: true });
+    await writeFile(path.join(srcDir, "a.txt"), "from-1");
+    await writeFile(path.join(srcDir2, "b.txt"), "from-2");
+    const onCopy = vi.fn();
+
+    const result = copyChangedSync(
+      [
+        { src: "*.txt", dest: destDir, options: { cwd: srcDir } },
+        { src: "*.txt", dest: destDir2, options: { cwd: srcDir2 } },
+      ],
+      { logLevel: "silent", onCopy },
+    );
+
+    expect(result).toEqual({ copyCount: 2, skipCount: 0 });
+    // Regression check: the array-of-CopyParam branch must forward
+    // defaultOptions to each recursive call.
+    expect(onCopy).toHaveBeenCalledTimes(2);
+  });
+
+  it("still returns a no-op for an empty CopyParam[] even with defaultOptions set", () => {
+    expect(copyChangedSync([], { logLevel: "silent", force: true })).toEqual({
+      copyCount: 0,
+      skipCount: 0,
+    });
   });
 });
 

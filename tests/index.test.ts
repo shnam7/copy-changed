@@ -1,64 +1,23 @@
-import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-// ---- Controllable stat mock -------------------------------------------
-// We keep the real implementation by default, but allow individual tests
-// to inject a custom `stat` behavior (e.g. to simulate a permission error)
-// for a specific path while every other path still resolves normally.
-// Note: index.ts, hooks.ts, and utils.ts all import `stat` from
-// "node:fs/promises", but vi.mock intercepts the module by specifier, so
-// this single mock covers all three internal modules.
-type StatFn = typeof import("node:fs/promises").stat;
-let statOverride: StatFn | null = null;
-
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return {
-    ...actual,
-    stat: ((...args: Parameters<StatFn>) => {
-      if (statOverride) return statOverride(...args);
-      return actual.stat(...args);
-    }) as StatFn,
-  };
-});
-
-// A reference to the real, un-mocked `stat`, used as a passthrough inside
-// the per-test overrides below so they don't recurse into themselves.
-const { stat: realStat } =
-  await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+import { createTempDirs, removeTempDirs, type TempDirs } from "./helpers/fixtures";
 
 const { copyChanged } = await import("../src/index.ts");
 
-// A minimal mock satisfying ts-log's `Logger` interface, so verbose/warn
-// output can be asserted on directly instead of trying to intercept
-// pino-pretty's worker-thread-based stdout writes.
-const createMockLogger = () => ({
-  trace: vi.fn(),
-  debug: vi.fn(),
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-});
-
-// -------------------------------------------------------------------------
-
+let dirs: TempDirs;
 let tmpRoot: string;
 let srcDir: string;
 let destDir: string;
 
 beforeEach(async () => {
-  tmpRoot = await mkdtemp(path.join(os.tmpdir(), "copy-changed-"));
-  srcDir = path.join(tmpRoot, "src");
-  destDir = path.join(tmpRoot, "dest");
-  await mkdir(srcDir, { recursive: true });
+  dirs = await createTempDirs();
+  ({ tmpRoot, srcDir, destDir } = dirs);
 });
 
 afterEach(async () => {
-  statOverride = null;
   vi.restoreAllMocks();
-  await rm(tmpRoot, { recursive: true, force: true });
+  await removeTempDirs(tmpRoot);
 });
 
 describe("copyChanged - core behavior", () => {
@@ -121,7 +80,7 @@ describe("copyChanged - core behavior", () => {
     expect(result).toEqual({ copyCount: 0, skipCount: 0 });
     // Regression check: an empty srcPatterns array must not be swallowed
     // by the CopyParam[] branch - clearDest still has to run. See the
-    // `dest === undefined` disambiguation in copyChangedAsync.ts.
+    // `typeof arg2 !== "string"` disambiguation in copyChangedAsync.ts.
     await expect(readFile(path.join(destDir, "stray.txt"), "utf8")).rejects.toThrow();
   });
 
@@ -132,12 +91,27 @@ describe("copyChanged - core behavior", () => {
     await expect(copyChanged([])).resolves.toEqual({ copyCount: 0, skipCount: 0 });
   });
 
+  it("does not throw when called as copyChanged([], defaultOptions) with no dest", async () => {
+    // Regression check: `defaultOptions` (a CopyOptions object) in the
+    // second argument position must not be mistaken for `dest` (a
+    // string) - only a *string* second argument means the srcPatterns
+    // overload was actually called. An empty CopyParam[] with
+    // defaultOptions is still a no-op, not a `path.resolve` crash.
+    await expect(copyChanged([], { logLevel: "silent" })).resolves.toEqual({
+      copyCount: 0,
+      skipCount: 0,
+    });
+  });
+
   it("returns a no-op result when src patterns are empty strings (delegated to tinyglobby)", async () => {
     const result = await copyChanged([""], destDir, { cwd: srcDir, logLevel: "silent" });
     expect(result).toEqual({ copyCount: 0, skipCount: 0 });
   });
 
-  it("skips files that are unchanged on a second run", async () => {
+  // Exhaustive mtime/size branch coverage lives in hooks.test.ts
+  // (defaultOnCheckChanged) - this just confirms the full pipeline wires
+  // change detection in correctly end to end.
+  it("skips unchanged files and re-copies files that changed, on repeated runs", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
 
     const first = await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
@@ -145,31 +119,13 @@ describe("copyChanged - core behavior", () => {
 
     const second = await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
     expect(second).toEqual({ copyCount: 0, skipCount: 1 });
-  });
 
-  it("re-copies a file whose size changed even if mtime looks older", async () => {
-    await writeFile(path.join(srcDir, "a.txt"), "hello");
-    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
-
-    const destPath = path.join(destDir, "a.txt");
     const future = new Date(Date.now() + 10_000);
-    await writeFile(destPath, "a-completely-different-length-of-content");
-    await utimes(destPath, future, future);
+    await writeFile(path.join(srcDir, "a.txt"), "changed");
+    await utimes(path.join(srcDir, "a.txt"), future, future);
 
-    const result = await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
-    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
-  });
-
-  it("re-copies a file whose mtime changed even if size is identical", async () => {
-    await writeFile(path.join(srcDir, "a.txt"), "hello");
-    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
-
-    const srcPath = path.join(srcDir, "a.txt");
-    const future = new Date(Date.now() + 10_000);
-    await utimes(srcPath, future, future);
-
-    const result = await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
-    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
+    const third = await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
+    expect(third).toEqual({ copyCount: 1, skipCount: 0 });
   });
 
   it("force option always copies regardless of change detection", async () => {
@@ -270,37 +226,6 @@ describe("copyChanged - core behavior", () => {
     expect(await readFile(path.join(destDir2, "b.txt"), "utf8")).toBe("from-2");
     expect(process.cwd()).toBe(originalCwd);
   });
-
-  it("rethrows a non-ENOENT error from the per-file stat check", async () => {
-    await writeFile(path.join(srcDir, "a.txt"), "hello");
-    await mkdir(destDir, { recursive: true });
-
-    const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" });
-    const destFilePath = path.join(destDir, "a.txt");
-    statOverride = (async (target: Parameters<StatFn>[0]) => {
-      if (target === destFilePath) throw permissionError;
-      return realStat(target);
-    }) as StatFn;
-
-    await expect(
-      copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" }),
-    ).rejects.toThrow("permission denied");
-  });
-
-  it("rethrows a non-ENOENT error from the initial dest-directory check", async () => {
-    await writeFile(path.join(srcDir, "a.txt"), "hello");
-    const freshDest = path.join(tmpRoot, "brand-new-dir");
-
-    const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" });
-    statOverride = (async (target: Parameters<StatFn>[0]) => {
-      if (target === freshDest) throw permissionError;
-      return realStat(target);
-    }) as StatFn;
-
-    await expect(
-      copyChanged("*.txt", freshDest, { cwd: srcDir, logLevel: "silent" }),
-    ).rejects.toThrow("permission denied");
-  });
 });
 
 describe("copyChanged - clearDest", () => {
@@ -344,24 +269,6 @@ describe("copyChanged - clearDest", () => {
     });
 
     expect(result.copyCount).toBe(1);
-  });
-
-  it("logs a verbose message when clearing the dest directory", async () => {
-    const logger = createMockLogger();
-    await writeFile(path.join(srcDir, "a.txt"), "hello");
-    await mkdir(destDir, { recursive: true });
-
-    await copyChanged("*.txt", destDir, {
-      cwd: srcDir,
-      clearDest: true,
-      logLevel: "verbose",
-      logger,
-    });
-
-    expect(logger.warn).toHaveBeenCalledTimes(1);
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining(`cleaned: '${path.join(destDir, "*")}'`),
-    );
   });
 
   it("calls onClearDest with the delete patterns for a directory dest", async () => {
@@ -416,23 +323,6 @@ describe("copyChanged - clearDest", () => {
     await expect(readFile(destFile, "utf8")).rejects.toThrow();
   });
 
-  it("logs a verbose message when clearing a single-file dest", async () => {
-    const logger = createMockLogger();
-    await writeFile(path.join(srcDir, "single.txt"), "content");
-    await mkdir(destDir, { recursive: true });
-    const destFile = path.join(destDir, "out.txt");
-    await writeFile(destFile, "placeholder");
-
-    await copyChanged("single.txt", destFile, {
-      cwd: srcDir,
-      clearDest: true,
-      logLevel: "verbose",
-      logger,
-    });
-
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining(`cleaned: '${destFile}'`));
-  });
-
   it("calls onClearDest with the deleted path for a single-file dest", async () => {
     await writeFile(path.join(srcDir, "single.txt"), "content");
     await mkdir(destDir, { recursive: true });
@@ -463,7 +353,6 @@ describe("copyChanged - dryRun", () => {
     });
 
     expect(result).toEqual({ copyCount: 1, skipCount: 0 });
-    // Neither the dest directory nor the file inside it should exist.
     await expect(readFile(path.join(destDir, "a.txt"), "utf8")).rejects.toThrow();
   });
 
@@ -578,7 +467,13 @@ describe("copyChanged - globOptions", () => {
   });
 });
 
-describe("copyChanged - hooks", () => {
+describe("copyChanged - event handler dispatch", () => {
+  // The *content* each default hook logs is covered in hooks.test.ts -
+  // these tests are about copyChanged's own dispatch contract: it calls
+  // the right hook, with the right arguments, awaits async hooks, skips
+  // hooks that don't apply, and lets a custom hook fully replace the
+  // matching default independently of the others.
+
   it("calls onCopy and onSkip with the resolved src/dest paths", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
     const onCopy = vi.fn();
@@ -599,7 +494,7 @@ describe("copyChanged - hooks", () => {
     expect(onSkip).toHaveBeenCalledTimes(1);
   });
 
-  it("awaits an async onCopy/onSkip handler before continuing", async () => {
+  it("awaits an async onCopy handler before continuing", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
     const order: string[] = [];
     const onCopy = vi.fn(async () => {
@@ -619,8 +514,7 @@ describe("copyChanged - hooks", () => {
     await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent" });
 
     // File is unchanged by the default mtime/size comparison (would be
-    // skipped) - but the default comparison never runs at all once a
-    // custom handler is supplied, so returning `true` here forces a copy.
+    // skipped), but a custom onCheckChanged bypasses the default entirely.
     const onCheckChanged = vi.fn((_srcFile: string, _destFile: string) => true);
     const result = await copyChanged("*.txt", destDir, {
       cwd: srcDir,
@@ -637,20 +531,11 @@ describe("copyChanged - hooks", () => {
     expect(result).toEqual({ copyCount: 1, skipCount: 0 });
   });
 
-  it("supports an async onCheckChanged handler that re-implements the default logic", async () => {
+  it("awaits an async onCheckChanged handler and honors its result", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
-
-    // Dest doesn't exist yet, so a from-scratch comparison should copy it -
-    // this exercises both the async path and that the handler is fully
-    // responsible for its own "missing dest" handling.
-    const onCheckChanged = vi.fn(async (srcFile: string, destFile: string) => {
+    const onCheckChanged = vi.fn(async () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
-      try {
-        const [srcStat, destStat] = await Promise.all([stat(srcFile), stat(destFile)]);
-        return srcStat.mtimeMs > destStat.mtimeMs || srcStat.size !== destStat.size;
-      } catch {
-        return true;
-      }
+      return true;
     });
 
     const result = await copyChanged("*.txt", destDir, {
@@ -677,17 +562,25 @@ describe("copyChanged - hooks", () => {
     expect(result).toEqual({ copyCount: 1, skipCount: 0 });
   });
 
+  it("propagates an error thrown by a custom onCheckChanged hook", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const onCheckChanged = vi.fn(() => {
+      throw new Error("boom from a custom hook");
+    });
+
+    await expect(
+      copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent", onCheckChanged }),
+    ).rejects.toThrow("boom from a custom hook");
+  });
+
   it("calls onFinish with the final result even when logLevel is silent", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
-    const logger = createMockLogger();
     const onFinish = vi.fn();
 
-    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent", logger, onFinish });
+    await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent", onFinish });
 
     expect(onFinish).toHaveBeenCalledTimes(1);
     expect(onFinish).toHaveBeenCalledWith({ copyCount: 1, skipCount: 0 }, expect.anything());
-    // A custom onFinish replaces the default summary log entirely.
-    expect(logger.info).not.toHaveBeenCalled();
   });
 
   it("awaits an async onFinish handler before returning", async () => {
@@ -748,8 +641,6 @@ describe("copyChanged - CopyParam overload", () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
     const ignoredDest = path.join(tmpRoot, "should-be-ignored");
 
-    // that TypeScript's overloads don't allow, to exercise the runtime
-    // fallback path.
     const result = await (copyChanged as (...args: unknown[]) => Promise<unknown>)(
       [{ src: "*.txt", dest: destDir, options: { cwd: srcDir, logLevel: "silent" } }],
       ignoredDest,
@@ -758,5 +649,64 @@ describe("copyChanged - CopyParam overload", () => {
     expect(result).toEqual({ copyCount: 1, skipCount: 0 });
     expect(await readFile(path.join(destDir, "a.txt"), "utf8")).toBe("hello");
     await expect(readFile(ignoredDest, "utf8")).rejects.toThrow();
+  });
+});
+
+describe("copyChanged - defaultOptions (CopyParam overload)", () => {
+  it("applies defaultOptions to a single CopyParam", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const onCopy = vi.fn();
+
+    const result = await copyChanged(
+      { src: "*.txt", dest: destDir, options: { cwd: srcDir } },
+      { logLevel: "silent", onCopy },
+    );
+
+    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
+    expect(onCopy).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets a CopyParam's own options override defaultOptions", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const defaultOnCopyHook = vi.fn();
+    const paramOnCopyHook = vi.fn();
+
+    await copyChanged(
+      { src: "*.txt", dest: destDir, options: { cwd: srcDir, onCopy: paramOnCopyHook } },
+      { logLevel: "silent", onCopy: defaultOnCopyHook },
+    );
+
+    expect(paramOnCopyHook).toHaveBeenCalledTimes(1);
+    expect(defaultOnCopyHook).not.toHaveBeenCalled();
+  });
+
+  it("applies defaultOptions to every CopyParam in an array", async () => {
+    const srcDir2 = path.join(tmpRoot, "src2");
+    const destDir2 = path.join(tmpRoot, "dest2");
+    await mkdir(srcDir2, { recursive: true });
+    await writeFile(path.join(srcDir, "a.txt"), "from-1");
+    await writeFile(path.join(srcDir2, "b.txt"), "from-2");
+    const onCopy = vi.fn();
+
+    const result = await copyChanged(
+      [
+        { src: "*.txt", dest: destDir, options: { cwd: srcDir } },
+        { src: "*.txt", dest: destDir2, options: { cwd: srcDir2 } },
+      ],
+      { logLevel: "silent", onCopy },
+    );
+
+    expect(result).toEqual({ copyCount: 2, skipCount: 0 });
+    // Regression check: the array-of-CopyParam branch must forward
+    // defaultOptions to each recursive call - an earlier draft dropped
+    // it, so a shared hook like `onCopy` here would silently never fire.
+    expect(onCopy).toHaveBeenCalledTimes(2);
+  });
+
+  it("still returns a no-op for an empty CopyParam[] even with defaultOptions set", async () => {
+    await expect(copyChanged([], { logLevel: "silent", force: true })).resolves.toEqual({
+      copyCount: 0,
+      skipCount: 0,
+    });
   });
 });

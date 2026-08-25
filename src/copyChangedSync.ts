@@ -60,35 +60,40 @@ export function copyChangedSync(
  *
  * @param params Single CopyParam or an array of CopyParam's.
  */
-export function copyChangedSync(params: CopyParam | readonly CopyParam[]): CopyResult;
+export function copyChangedSync(
+  params: CopyParam | readonly CopyParam[],
+  defaultOptions?: CopyOptions,
+): CopyResult;
 
 /**
  * copyChangedSync implementation.
  */
 export function copyChangedSync(
   arg1: string | readonly string[] | CopyParam | readonly CopyParam[],
-  dest?: string,
+  arg2?: string | CopyOptions,
   options: CopyOptions = {},
 ): CopyResult {
   const result: CopyResult = { copyCount: 0, skipCount: 0 };
 
   // Single CopyParam object.
   if (isCopyParam(arg1)) {
-    return copyChangedSync(arg1.src, arg1.dest, arg1.options);
+    const defaultOptions = arg2 as CopyOptions;
+    return copyChangedSync(arg1.src, arg1.dest, { ...defaultOptions, ...arg1.options });
   }
 
   // Array of CopyParam objects.
   if (Array.isArray(arg1)) {
     if (arg1.length === 0) {
-      // No elements to inspect, so `dest` is the only signal for which
-      // overload was actually called. No dest -> CopyParam[] overload
-      // with zero params, a pure no-op. A dest was given -> srcPatterns
-      // overload with empty patterns; fall through to the normal path
-      // below so options like clearDest still run.
-      if (dest === undefined) return result;
+      // No elements to inspect, so `arg2` is the only signal for which
+      // overload was actually called. Only a *string* `arg2` means the
+      // srcPatterns overload's `dest` was actually given - `undefined` or
+      // a CopyOptions object both mean the CopyParam[] overload (with
+      // zero params, optionally with defaultOptions), a pure no-op.
+      if (typeof arg2 !== "string") return result;
     } else if (isCopyParam(arg1[0])) {
+      const defaultOptions = arg2 as CopyOptions;
       for (const param of arg1 as readonly CopyParam[]) {
-        const r = copyChangedSync(param);
+        const r = copyChangedSync(param, defaultOptions);
         result.copyCount += r.copyCount;
         result.skipCount += r.skipCount;
       }
@@ -116,7 +121,7 @@ export function copyChangedSync(
 
   const srcPatterns = arrayify(arg1 as string | readonly string[]);
   const cwd = path.resolve(opts.cwd);
-  const destAbs = path.resolve(cwd, dest as string);
+  const destAbs = path.resolve(cwd, arg2 as string);
   const isDestDirectory = isDirectorySync(destAbs);
   const destBase = isDestDirectory ? destAbs : path.dirname(destAbs);
 
