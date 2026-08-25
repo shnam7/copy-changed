@@ -47,6 +47,18 @@ await copyChanged([
 ]);
 ```
 
+Pass a second argument to apply shared defaults across every task - a task's own `options` still wins where the two overlap:
+
+```ts
+await copyChanged(
+  [
+    { src: "src/**/*.js", dest: "dist/js" },
+    { src: "src/**/*.css", dest: "dist/css", options: { force: true } }, // force wins over the default below
+  ],
+  { logLevel: "verbose" },
+);
+```
+
 ### Preview with Dry Run
 
 ```ts
@@ -89,7 +101,7 @@ Only files that have changed (by modified time or size) are copied.
 - **options**: `CopyOptions` (optional)
   See below.
 
-### `copyChanged(params)`
+### `copyChanged(params, defaultOptions?)`
 
 Accepts a single `CopyParam` object or an array of them:
 
@@ -101,9 +113,12 @@ interface CopyParam {
 }
 ```
 
-### `copyChangedSync(src, dest, options)` / `copyChangedSync(params)`
+- **params**: A single `CopyParam` or `CopyParam[]`.
+- **defaultOptions**: `CopyOptions` (optional) - merged into every param's `options`. Where the two overlap, the param's own `options` wins (see [Multiple Copy Tasks](#multiple-copy-tasks)).
 
-Synchronous counterpart of `copyChanged` above - same parameters, same overloads (a `src`/`dest`/`options` triple, or a single `CopyParam`/`CopyParam[]`), same `CopyOptions`, and it returns a `CopyResult` directly instead of a `Promise<CopyResult>`.
+### `copyChangedSync(src, dest, options)` / `copyChangedSync(params, defaultOptions?)`
+
+Synchronous counterpart of `copyChanged` above - same parameters, same overloads (a `src`/`dest`/`options` triple, or a single `CopyParam`/`CopyParam[]` with an optional `defaultOptions`), same `CopyOptions`, and it returns a `CopyResult` directly instead of a `Promise<CopyResult>`.
 
 ### `CopyOptions`
 
