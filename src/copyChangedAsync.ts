@@ -38,7 +38,7 @@ export {
  * @param dest Destination directory or a file.
  * @param options CopyOptions
  */
-export async function copyChanged(
+export async function copyChangedAsync(
   src: string | readonly string[],
   dest: string,
   options?: CopyOptions,
@@ -50,7 +50,7 @@ export async function copyChanged(
  *
  * @param params Single CopyParam or an array of CopyParam's.
  */
-export async function copyChanged(
+export async function copyChangedAsync(
   params: CopyParam | readonly CopyParam[],
   defaultOptions?: CopyOptions,
 ): Promise<CopyResult>;
@@ -58,7 +58,7 @@ export async function copyChanged(
 /**
  * copyChanged implementation.
  */
-export async function copyChanged(
+export async function copyChangedAsync(
   arg1: string | readonly string[] | CopyParam | readonly CopyParam[],
   arg2?: string | CopyOptions,
   options: CopyOptions = {},
@@ -68,7 +68,7 @@ export async function copyChanged(
   // Single CopyParam object.
   if (isCopyParam(arg1)) {
     const defaultOptions = arg2 as CopyOptions;
-    return copyChanged(arg1.src, arg1.dest, { ...defaultOptions, ...arg1.options });
+    return copyChangedAsync(arg1.src, arg1.dest, { ...defaultOptions, ...arg1.options });
   }
 
   // Array of CopyParam objects.
@@ -83,7 +83,7 @@ export async function copyChanged(
     } else if (isCopyParam(arg1[0])) {
       const defaultOptions = arg2 as CopyOptions;
       for (const param of arg1 as readonly CopyParam[]) {
-        const r = await copyChanged(param, defaultOptions);
+        const r = await copyChangedAsync(param, defaultOptions);
         result.copyCount += r.copyCount;
         result.skipCount += r.skipCount;
       }
@@ -177,4 +177,4 @@ export async function copyChanged(
   return result;
 }
 
-export { copyChanged as copyChangedAsync };
+export { copyChangedAsync as copyChanged };
