@@ -105,8 +105,7 @@ export function copyChangedSync(
     cwd: process.cwd(),
     clearDest: false,
     force: false,
-    logger: getDefaultLogger(),
-    logLevel: "normal",
+    logLevel: "info",
     globOptions: {},
     dryRun: false,
     onCheckChanged: defaultOnCheckChanged,
@@ -115,7 +114,20 @@ export function copyChangedSync(
     onSkip: defaultOnSkip,
     onFinish: defaultOnFinish,
     ...options,
+
+    // override the logger
+    logger: options.logger ?? getDefaultLogger(),
   };
+
+  // Only touch the logger's level when the caller explicitly passed
+  // `logLevel` - otherwise leave a caller-supplied logger's own level (or
+  // the shared default logger's "info" level) untouched, and reflect the
+  // logger's actual level back onto `opts.logLevel` for consistency.
+  if (options.logLevel) {
+    opts.logger.level = options.logLevel;
+  } else {
+    opts.logLevel = opts.logger.level;
+  }
 
   warnIfAsyncHooksPresent(opts);
 

@@ -51,7 +51,7 @@ export function defaultOnCheckChanged(
 // sync function here works fine as its default too.
 
 export function defaultOnClearDest(delPatterns: string[], options: Required<CopyOptions>): void {
-  if (options.logLevel === "verbose") options.logger.warn(`cleaned: '${delPatterns.join(",")}'.`);
+  options.logger.verbose(`cleaned: '${delPatterns.join(",")}'.`);
 }
 
 export function defaultOnCopy(
@@ -59,7 +59,7 @@ export function defaultOnCopy(
   destFile: string,
   options: Required<CopyOptions>,
 ): void {
-  if (options.logLevel === "verbose") options.logger.info(`Copy: ${srcFile} -> ${destFile}`);
+  options.logger.verbose(`Copy: ${srcFile} -> ${destFile}`);
 }
 
 export function defaultOnSkip(
@@ -67,11 +67,9 @@ export function defaultOnSkip(
   destFile: string,
   options: Required<CopyOptions>,
 ): void {
-  if (options.logLevel === "verbose") options.logger.info(`Skip: ${srcFile} -> ${destFile}`);
+  options.logger.verbose(`Skip: ${srcFile} -> ${destFile}`);
 }
 
 export function defaultOnFinish(result: CopyResult, options: Required<CopyOptions>): void {
-  if (options.logLevel !== "silent") {
-    options.logger.info(`${result.copyCount} file(s) copied, ${result.skipCount} file(s) skipped.`);
-  }
+  options.logger.info(`${result.copyCount} file(s) copied, ${result.skipCount} file(s) skipped.`);
 }

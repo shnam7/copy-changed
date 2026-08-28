@@ -1,4 +1,4 @@
-import type { Logger } from "@wicle/tiny-logger";
+import type { Logger, LogLevel } from "@wicle/tiny-logger";
 import type { GlobOptions } from "tinyglobby";
 
 export interface CopyParam {
@@ -28,7 +28,7 @@ export interface CopyOptions {
 
   logger?: Logger;
 
-  logLevel?: "normal" | "verbose" | "silent";
+  logLevel?: LogLevel;
 
   // options to tinyglobby.
   globOptions?: GlobOptions;

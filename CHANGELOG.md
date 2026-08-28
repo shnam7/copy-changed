@@ -1,5 +1,11 @@
 # copy-changed
 
+## 0.12.0
+
+### Minor Changes
+
+- Change logLevel option to use LogLevel from @wicle/tiny-log.
+
 ## 0.11.0
 
 ### Minor Changes
