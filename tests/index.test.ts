@@ -2,6 +2,7 @@ import { mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTempDirs, removeTempDirs, type TempDirs } from "./helpers/fixtures";
+import { createMockLogger } from "./helpers/mockLogger.ts";
 
 const { copyChanged } = await import("../src/index.ts");
 
@@ -708,5 +709,23 @@ describe("copyChanged - defaultOptions (CopyParam overload)", () => {
       copyCount: 0,
       skipCount: 0,
     });
+  });
+
+  it("param.options is merged to defaultOptions with priority", async () => {
+    const srcDir2 = path.join(tmpRoot, "src2");
+    const destDir2 = path.join(tmpRoot, "dest2");
+    await mkdir(srcDir2, { recursive: true });
+    await writeFile(path.join(srcDir, "a.txt"), "from-1");
+    await writeFile(path.join(srcDir2, "b.txt"), "from-2");
+    const mockLogger = createMockLogger();
+
+    await copyChanged(
+      [
+        { src: "*.txt", dest: destDir, options: { cwd: srcDir } },
+        { src: "*.txt", dest: destDir2, options: { cwd: srcDir2, logLevel: "silent" } },
+      ],
+      { logger: mockLogger },
+    );
+    expect(mockLogger.info).toHaveBeenCalledTimes(1);
   });
 });

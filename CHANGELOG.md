@@ -1,5 +1,11 @@
 # copy-changed
 
+## 0.12.1
+
+### Patch Changes
+
+- Fix verbose option handling error.
+
 ## 0.12.0
 
 ### Minor Changes

@@ -1,5 +1,6 @@
 import { mkdir, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { LogLevel } from "@wicle/tiny-logger";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createTempDirs, removeTempDirs, type TempDirs } from "./helpers/fixtures.ts";
 import { createMockLogger } from "./helpers/mockLogger.ts";
@@ -47,9 +48,12 @@ const {
 } = await import("../src/hooks.ts");
 
 // Minimal `Required<CopyOptions>` stand-ins - only the fields each default
-// hook actually reads (`logLevel`, `logger`) need real values.
-const opts = (overrides: { logLevel?: "normal" | "verbose" | "silent"; logger?: unknown } = {}) =>
-  ({ logLevel: "normal", logger: createMockLogger(), ...overrides }) as never;
+// hook actually reads (`logLevel`, `logger`) need real values. `logLevel`
+// uses the same value set as CopyOptions.logLevel (tiny-logger's
+// trace/debug/verbose/info/warn/error/fatal/silent), not the old
+// normal/verbose/silent scheme.
+const opts = (overrides: { logLevel?: LogLevel; logger?: unknown } = {}) =>
+  ({ logLevel: "info", logger: createMockLogger(), ...overrides }) as never;
 
 describe("defaultOnCheckChangedAsync", () => {
   let dirs: TempDirs;
@@ -206,59 +210,73 @@ describe("defaultOnCheckChanged", () => {
 });
 
 describe("defaultOnClearDest", () => {
-  // it("logs a warning with the delete patterns when verbose", () => {
-  //   const logger = createMockLogger();
-  //   defaultOnClearDest(["/dest/*", "!/dest/keep.txt"], opts({ logLevel: "verbose", logger }));
-
-  //   expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("/dest/*,!/dest/keep.txt"));
-  // });
-
-  it("does not log when logLevel is not verbose", () => {
+  it("logs a verbose message with the delete patterns when logLevel is verbose or more permissive", () => {
     const logger = createMockLogger();
-    defaultOnClearDest(["/dest/*"], opts({ logLevel: "normal", logger }));
-    expect(logger.warn).not.toHaveBeenCalled();
+    defaultOnClearDest(["/dest/*", "!/dest/keep.txt"], opts({ logLevel: "verbose", logger }));
+
+    expect(logger.verbose).toHaveBeenCalledWith(
+      expect.stringContaining("/dest/*,!/dest/keep.txt"),
+    );
+  });
+
+  it("does not log when logLevel is less permissive than verbose (the default, info)", () => {
+    const logger = createMockLogger();
+    defaultOnClearDest(["/dest/*"], opts({ logLevel: "info", logger }));
+    expect(logger.verbose).not.toHaveBeenCalled();
   });
 });
 
 describe("defaultOnCopy", () => {
-  // it("logs the copy with resolved paths when verbose", () => {
-  //   const logger = createMockLogger();
-  //   defaultOnCopy("/src/a.txt", "/dest/a.txt", opts({ logLevel: "verbose", logger }));
-  //   expect(logger.info).toHaveBeenCalledWith("Copy: /src/a.txt -> /dest/a.txt");
-  // });
+  it("logs a verbose message with resolved paths when logLevel is verbose or more permissive", () => {
+    const logger = createMockLogger();
+    defaultOnCopy("/src/a.txt", "/dest/a.txt", opts({ logLevel: "verbose", logger }));
+    expect(logger.verbose).toHaveBeenCalledWith("Copy: /src/a.txt -> /dest/a.txt");
+  });
 
-  it("does not log when logLevel is not verbose", () => {
+  it("does not log when logLevel is silent", () => {
     const logger = createMockLogger();
     defaultOnCopy("/src/a.txt", "/dest/a.txt", opts({ logLevel: "silent", logger }));
-    expect(logger.info).not.toHaveBeenCalled();
+    expect(logger.verbose).not.toHaveBeenCalled();
   });
 });
 
 describe("defaultOnSkip", () => {
-  // it("logs the skip with resolved paths when verbose", () => {
-  //   const logger = createMockLogger();
-  //   defaultOnSkip("/src/a.txt", "/dest/a.txt", opts({ logLevel: "verbose", logger }));
-  //   expect(logger.info).toHaveBeenCalledWith("Skip: /src/a.txt -> /dest/a.txt");
-  // });
-
-  it("does not log when logLevel is not verbose", () => {
+  it("logs a verbose message with resolved paths when logLevel is verbose or more permissive", () => {
     const logger = createMockLogger();
-    defaultOnSkip("/src/a.txt", "/dest/a.txt", opts({ logLevel: "normal", logger }));
-    expect(logger.info).not.toHaveBeenCalled();
+    defaultOnSkip("/src/a.txt", "/dest/a.txt", opts({ logLevel: "trace", logger }));
+    expect(logger.verbose).toHaveBeenCalledWith("Skip: /src/a.txt -> /dest/a.txt");
+  });
+
+  it("does not log when logLevel is less permissive than verbose (the default, info)", () => {
+    const logger = createMockLogger();
+    defaultOnSkip("/src/a.txt", "/dest/a.txt", opts({ logLevel: "info", logger }));
+    expect(logger.verbose).not.toHaveBeenCalled();
   });
 });
 
 describe("defaultOnFinish", () => {
-  it("logs the summary unless logLevel is silent", () => {
+  it("logs the summary at the default logLevel (info)", () => {
     const logger = createMockLogger();
-    defaultOnFinish({ copyCount: 2, skipCount: 1 }, opts({ logLevel: "normal", logger }));
+    defaultOnFinish({ copyCount: 2, skipCount: 1 }, opts({ logLevel: "info", logger }));
     expect(logger.info).toHaveBeenCalledWith("2 file(s) copied, 1 file(s) skipped.");
   });
 
-  // it("does not log when logLevel is silent", () => {
-  //   const logger = createMockLogger();
-  //   logger.level = "silent";
-  //   defaultOnFinish({ copyCount: 0, skipCount: 0 }, opts({ logger }));
-  //   expect(logger.info).not.toHaveBeenCalled();
-  // });
+  it("does not log when logLevel is silent", () => {
+    const logger = createMockLogger();
+    defaultOnFinish({ copyCount: 0, skipCount: 0 }, opts({ logLevel: "silent", logger }));
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  it("does not log when logLevel is less permissive than info (e.g. error)", () => {
+    const logger = createMockLogger();
+    defaultOnFinish({ copyCount: 0, skipCount: 0 }, opts({ logLevel: "error", logger }));
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  it("still logs when logLevel is more permissive than info (e.g. verbose)", () => {
+    const logger = createMockLogger();
+    defaultOnFinish({ copyCount: 3, skipCount: 0 }, opts({ logLevel: "verbose", logger }));
+    expect(logger.info).toHaveBeenCalledWith("3 file(s) copied, 0 file(s) skipped.");
+  });
 });
+

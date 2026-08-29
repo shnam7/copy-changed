@@ -1,6 +1,24 @@
 import { statSync } from "node:fs";
 import { stat } from "node:fs/promises";
+import type { LogLevel } from "@wicle/tiny-logger";
+import { LOG_LEVEL } from "@wicle/tiny-logger";
 import type { CopyOptions, CopyResult } from "./types";
+
+// Whether a message at `messageLevel` should actually be logged given the
+// caller's configured `configuredLevel`. This is copy-changed's own
+// contract, independent of whatever logger is plugged in - a logger like
+// the shared @wicle/tiny-logger default also filters by its own `.level`
+// (see copyChangedAsync.ts/copyChangedSync.ts, which forward `logLevel`
+// onto `logger.level`), but that only works for loggers that actually
+// implement level-based filtering. Plain `console`, the mock loggers in
+// this project's tests, and many other minimal ts-log-compatible loggers
+// do not - `logger.level = "silent"` is a no-op property assignment for
+// them, so without this check `logger.info(...)` would still fire. This
+// check makes `logLevel` behave identically for every logger.
+function shouldLog(configuredLevel: LogLevel, messageLevel: keyof typeof LOG_LEVEL): boolean {
+  if (configuredLevel === "silent") return false;
+  return LOG_LEVEL[messageLevel] >= LOG_LEVEL[configuredLevel];
+}
 
 //----- onCheckChanged: the one hook with genuinely different I/O between
 // the async and sync variants (stat vs statSync), so each keeps its own
@@ -51,7 +69,9 @@ export function defaultOnCheckChanged(
 // sync function here works fine as its default too.
 
 export function defaultOnClearDest(delPatterns: string[], options: Required<CopyOptions>): void {
-  options.logger.verbose(`cleaned: '${delPatterns.join(",")}'.`);
+  if (shouldLog(options.logLevel, "verbose")) {
+    options.logger.verbose(`cleaned: '${delPatterns.join(",")}'.`);
+  }
 }
 
 export function defaultOnCopy(
@@ -59,7 +79,9 @@ export function defaultOnCopy(
   destFile: string,
   options: Required<CopyOptions>,
 ): void {
-  options.logger.verbose(`Copy: ${srcFile} -> ${destFile}`);
+  if (shouldLog(options.logLevel, "verbose")) {
+    options.logger.verbose(`Copy: ${srcFile} -> ${destFile}`);
+  }
 }
 
 export function defaultOnSkip(
@@ -67,9 +89,13 @@ export function defaultOnSkip(
   destFile: string,
   options: Required<CopyOptions>,
 ): void {
-  options.logger.verbose(`Skip: ${srcFile} -> ${destFile}`);
+  if (shouldLog(options.logLevel, "verbose")) {
+    options.logger.verbose(`Skip: ${srcFile} -> ${destFile}`);
+  }
 }
 
 export function defaultOnFinish(result: CopyResult, options: Required<CopyOptions>): void {
-  options.logger.info(`${result.copyCount} file(s) copied, ${result.skipCount} file(s) skipped.`);
+  if (shouldLog(options.logLevel, "info")) {
+    options.logger.info(`${result.copyCount} file(s) copied, ${result.skipCount} file(s) skipped.`);
+  }
 }

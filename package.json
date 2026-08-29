@@ -1,6 +1,6 @@
 {
   "name": "copy-changed",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "A Node.js utility library that copies only changed files from source to destination.",
   "type": "module",
   "main": "./dist/index.cjs",

@@ -1,6 +1,6 @@
 import { copyFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
-import { getDefaultLogger } from "@wicle/tiny-logger";
+import { getDefaultLogger, withVerbose } from "@wicle/tiny-logger";
 import { deleteSync } from "del";
 import globParent from "glob-parent";
 import { globSync, isDynamicPattern } from "tinyglobby";
@@ -115,17 +115,25 @@ export function copyChangedSync(
     onFinish: defaultOnFinish,
     ...options,
 
-    // override the logger
-    logger: options.logger ?? getDefaultLogger(),
+    // Resolve the logger, then guarantee it has a `.verbose` method -
+    // README documents "any ts-log-compatible logger" (e.g. `console`),
+    // and plain ts-log loggers don't define `.verbose` at all. Without
+    // this, defaultOnCopy/onSkip/onClearDest calling `.verbose(...)`
+    // would throw on such a logger. withVerbose() is a no-op if the
+    // logger already has `.verbose` (e.g. the tiny-logger default).
+    logger: withVerbose(options.logger ?? getDefaultLogger()),
   };
 
   // Only touch the logger's level when the caller explicitly passed
   // `logLevel` - otherwise leave a caller-supplied logger's own level (or
   // the shared default logger's "info" level) untouched, and reflect the
-  // logger's actual level back onto `opts.logLevel` for consistency.
+  // logger's actual level back onto `opts.logLevel` for consistency. Some
+  // loggers (a plain `console`, the mock loggers in this project's tests)
+  // don't expose `.level` at all - keep the "info" default set above
+  // rather than overwriting `opts.logLevel` with `undefined`.
   if (options.logLevel) {
     opts.logger.level = options.logLevel;
-  } else {
+  } else if (opts.logger.level) {
     opts.logLevel = opts.logger.level;
   }
 
