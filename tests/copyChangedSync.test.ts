@@ -150,6 +150,20 @@ describe("copyChangedSync - core behavior", () => {
     expect(await readFile(destFile, "utf8")).toBe("single-content");
   });
 
+  it("copies to a new extensionless destination file when destType is file", async () => {
+    await writeFile(path.join(srcDir, "single.txt"), "single-content");
+    const destFile = path.join(destDir, "README");
+
+    const result = copyChangedSync("single.txt", destFile, {
+      cwd: srcDir,
+      destType: "file",
+      logLevel: "silent",
+    });
+
+    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
+    expect(await readFile(destFile, "utf8")).toBe("single-content");
+  });
+
   it("throws when dest is an existing file but src is a glob pattern", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
     await mkdir(destDir, { recursive: true });
@@ -164,6 +178,16 @@ describe("copyChangedSync - core behavior", () => {
   it("treats a non-existent dest without an extension as a directory", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
     const freshDest = path.join(tmpRoot, "brand-new-dir");
+
+    const result = copyChangedSync("*.txt", freshDest, { cwd: srcDir, logLevel: "silent" });
+
+    expect(result.copyCount).toBe(1);
+    expect(await readFile(path.join(freshDest, "a.txt"), "utf8")).toBe("hello");
+  });
+
+  it("treats a trailing slash as a directory for a new path with an extension", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const freshDest = `${path.join(tmpRoot, "brand-new-dir.txt")}${path.sep}`;
 
     const result = copyChangedSync("*.txt", freshDest, { cwd: srcDir, logLevel: "silent" });
 
@@ -292,6 +316,22 @@ describe("copyChangedSync - dryRun", () => {
     expect(await readFile(path.join(destDir, "stray.txt"), "utf8")).toBe(
       "should survive the dry run",
     );
+  });
+
+  it("calls onClearDest in dry-run mode without deleting files", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await mkdir(destDir, { recursive: true });
+    const onClearDest = vi.fn();
+
+    copyChangedSync("*.txt", destDir, {
+      cwd: srcDir,
+      clearDest: true,
+      dryRun: true,
+      logLevel: "silent",
+      onClearDest,
+    });
+
+    expect(onClearDest).toHaveBeenCalledWith([path.join(destDir, "*")], expect.anything());
   });
 });
 
@@ -509,10 +549,9 @@ describe("copyChangedSync - async hook detection", () => {
       onCheckChanged: async () => false,
     });
 
-    // The async hook's result (false, i.e. "skip") is ignored -
-    // copyChangedSync falls back to its normal truthy-checked default
-    // and copies the file.
-    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
+    // Async hooks return Promises, which are not valid synchronous change
+    // decisions and are therefore treated as false.
+    expect(result).toEqual({ copyCount: 0, skipCount: 1 });
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("onCheckChanged"));
   });
@@ -544,8 +583,20 @@ describe("copyChangedSync - async hook detection", () => {
       onCheckChanged: async () => true,
     });
 
-    expect(result.copyCount).toBe(5);
+    expect(result).toEqual({ copyCount: 0, skipCount: 5 });
     expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a non-boolean onCheckChanged result as false", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+
+    const result = copyChangedSync("*.txt", destDir, {
+      cwd: srcDir,
+      logLevel: "silent",
+      onCheckChanged: () => "true" as never,
+    });
+
+    expect(result).toEqual({ copyCount: 0, skipCount: 1 });
   });
 
   it("warns separately for each distinct async hook", async () => {

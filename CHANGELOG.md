@@ -1,5 +1,11 @@
 # copy-changed
 
+## 0.13.0
+
+### Minor Changes
+
+- Add destType option to CopyOptions for file/directory interpretation.
+
 ## 0.12.1
 
 ### Patch Changes

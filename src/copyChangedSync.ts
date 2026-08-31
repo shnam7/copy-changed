@@ -22,7 +22,7 @@ const HOOK_NAMES = ["onCheckChanged", "onClearDest", "onCopy", "onSkip", "onFini
 // copyChangedSync's hooks are typed to allow `T | Promise<T>` (same shape
 // as the async API - see types.ts) so that one CopyOptions type serves
 // both APIs, but copyChangedSync itself never awaits anything. Passing an
-// async hook here means its result is silently ignored - so we check
+// async hook here cannot be awaited - so we check
 // once, upfront, whether each hook was declared with the `async` keyword
 // and warn if so. This only catches hooks declared `async`; a hook that
 // manually returns a Promise without that keyword is not detected here -
@@ -30,9 +30,13 @@ const HOOK_NAMES = ["onCheckChanged", "onClearDest", "onCopy", "onSkip", "onFini
 function warnIfAsyncHooksPresent(opts: Required<CopyOptions>): void {
   for (const hookName of HOOK_NAMES) {
     if (isAsyncFunction(opts[hookName])) {
+      const outcome =
+        hookName === "onCheckChanged"
+          ? "its return value is treated as false"
+          : "its result is ignored";
       opts.logger.warn(
         `copyChangedSync: '${hookName}' is an async function, but copyChangedSync cannot await ` +
-          "hooks - its result will be ignored. Pass a synchronous hook when using copyChangedSync.",
+          `hooks - ${outcome}. Pass a synchronous hook when using copyChangedSync.`,
       );
     }
   }
@@ -103,6 +107,7 @@ export function copyChangedSync(
 
   const opts: Required<CopyOptions> = {
     cwd: process.cwd(),
+    destType: "auto",
     clearDest: false,
     force: false,
     logLevel: "info",
@@ -141,8 +146,11 @@ export function copyChangedSync(
 
   const srcPatterns = arrayify(arg1 as string | readonly string[]);
   const cwd = path.resolve(opts.cwd);
-  const destAbs = path.resolve(cwd, arg2 as string);
-  const isDestDirectory = isDirectorySync(destAbs);
+  const dest = arg2 as string;
+  const destAbs = path.resolve(cwd, dest);
+  const isDestDirectory =
+    opts.destType === "directory" ||
+    (opts.destType === "auto" && (/[/\\]$/.test(dest) || isDirectorySync(destAbs)));
   const destBase = isDestDirectory ? destAbs : path.dirname(destAbs);
 
   // Single-file copy: src must resolve to exactly one, non-glob file.
@@ -196,7 +204,8 @@ export function copyChangedSync(
     const destFile = isSingleFileCopy ? destAbs : path.join(destBase, variablePath);
     const destDir = path.dirname(destFile);
 
-    if (opts.force || opts.onCheckChanged(srcFile, destFile, opts)) {
+    const changed = opts.force ? true : opts.onCheckChanged(srcFile, destFile, opts) === true;
+    if (changed) {
       if (!opts.dryRun) {
         mkdirSync(destDir, { recursive: true });
         copyFileSync(srcFile, destFile);

@@ -119,6 +119,20 @@ describe("copyChanged - core behavior", () => {
     expect(await readFile(destFile, "utf8")).toBe("single-content");
   });
 
+  it("copies to a new extensionless destination file when destType is file", async () => {
+    await writeFile(path.join(srcDir, "single.txt"), "single-content");
+    const destFile = path.join(destDir, "README");
+
+    const result = await copyChanged("single.txt", destFile, {
+      cwd: srcDir,
+      destType: "file",
+      logLevel: "silent",
+    });
+
+    expect(result).toEqual({ copyCount: 1, skipCount: 0 });
+    expect(await readFile(destFile, "utf8")).toBe("single-content");
+  });
+
   it("copies a single named file into an existing destination file's directory", async () => {
     await writeFile(path.join(srcDir, "single.txt"), "single-content");
     await mkdir(destDir, { recursive: true });
@@ -157,6 +171,16 @@ describe("copyChanged - core behavior", () => {
   it("treats a non-existent dest without an extension as a directory", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
     const freshDest = path.join(tmpRoot, "brand-new-dir");
+
+    const result = await copyChanged("*.txt", freshDest, { cwd: srcDir, logLevel: "silent" });
+
+    expect(result.copyCount).toBe(1);
+    expect(await readFile(path.join(freshDest, "a.txt"), "utf8")).toBe("hello");
+  });
+
+  it("treats a trailing slash as a directory for a new path with an extension", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const freshDest = `${path.join(tmpRoot, "brand-new-dir.txt")}${path.sep}`;
 
     const result = await copyChanged("*.txt", freshDest, { cwd: srcDir, logLevel: "silent" });
 
@@ -361,6 +385,33 @@ describe("copyChanged - dryRun", () => {
     );
   });
 
+  it("propagates an error rejected by an async onCopy hook", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    const onCopy = vi.fn(async () => {
+      throw new Error("async copy hook failed");
+    });
+
+    await expect(
+      copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent", onCopy }),
+    ).rejects.toThrow("async copy hook failed");
+  });
+
+  it("calls onClearDest in dry-run mode without deleting files", async () => {
+    await writeFile(path.join(srcDir, "a.txt"), "hello");
+    await mkdir(destDir, { recursive: true });
+    const onClearDest = vi.fn();
+
+    await copyChanged("*.txt", destDir, {
+      cwd: srcDir,
+      clearDest: true,
+      dryRun: true,
+      logLevel: "silent",
+      onClearDest,
+    });
+
+    expect(onClearDest).toHaveBeenCalledWith([path.join(destDir, "*")], expect.anything());
+  });
+
   it("does not delete the dest file when combined with clearDest (single-file dest)", async () => {
     await writeFile(path.join(srcDir, "single.txt"), "new-content");
     await mkdir(destDir, { recursive: true });
@@ -544,7 +595,9 @@ describe("copyChanged - event handler dispatch", () => {
 
   it("calls onFinish with the final result even when logLevel is silent", async () => {
     await writeFile(path.join(srcDir, "a.txt"), "hello");
-    const onFinish = vi.fn();
+    const onFinish = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
 
     await copyChanged("*.txt", destDir, { cwd: srcDir, logLevel: "silent", onFinish });
 

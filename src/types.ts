@@ -13,6 +13,10 @@ export interface CopyOptions {
   // (e.g. via Promise.all) are safe.
   cwd?: string;
 
+  // Controls whether dest is interpreted as a file or directory. "auto"
+  // preserves the existing filesystem/extension-based detection.
+  destType?: "auto" | "file" | "directory";
+
   /*
     If true, empty whole dest.
     If glob, delete matched files only within the dest folder. (using del module).

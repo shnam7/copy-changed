@@ -93,6 +93,7 @@ export async function copyChangedAsync(
 
   const opts: Required<CopyOptions> = {
     cwd: process.cwd(),
+    destType: "auto",
     clearDest: false,
     force: false,
     logLevel: "info",
@@ -129,8 +130,11 @@ export async function copyChangedAsync(
 
   const srcPatterns = arrayify(arg1 as string | readonly string[]);
   const cwd = path.resolve(opts.cwd);
-  const destAbs = path.resolve(cwd, arg2 as string);
-  const isDestDirectory = await isDirectory(destAbs);
+  const dest = arg2 as string;
+  const destAbs = path.resolve(cwd, dest);
+  const isDestDirectory =
+    opts.destType === "directory" ||
+    (opts.destType === "auto" && (/[/\\]$/.test(dest) || (await isDirectory(destAbs))));
   const destBase = isDestDirectory ? destAbs : path.dirname(destAbs);
 
   // Single-file copy: src must resolve to exactly one, non-glob file.

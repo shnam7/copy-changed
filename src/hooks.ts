@@ -31,8 +31,10 @@ export async function defaultOnCheckChangedAsync(
   destFile: string,
   _options: Required<CopyOptions>,
 ): Promise<boolean> {
+  const srcStat = await stat(srcFile);
+
   try {
-    const [destStat, srcStat] = await Promise.all([stat(destFile), stat(srcFile)]);
+    const destStat = await stat(destFile);
     return srcStat.size !== destStat.size || srcStat.mtimeMs > destStat.mtimeMs;
   } catch (error) {
     if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {
@@ -47,9 +49,10 @@ export function defaultOnCheckChanged(
   destFile: string,
   _options: Required<CopyOptions>,
 ): boolean {
+  const srcStat = statSync(srcFile);
+
   try {
     const destStat = statSync(destFile);
-    const srcStat = statSync(srcFile);
     return srcStat.size !== destStat.size || srcStat.mtimeMs > destStat.mtimeMs;
   } catch (error) {
     if (error instanceof Error && (error as NodeJS.ErrnoException).code === "ENOENT") {

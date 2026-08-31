@@ -76,6 +76,22 @@ describe("defaultOnCheckChangedAsync", () => {
     expect(changed).toBe(true);
   });
 
+  it("rethrows an ENOENT error when the src file does not exist", async () => {
+    dirs = await createTempDirs();
+    const srcFile = path.join(dirs.srcDir, "a.txt");
+    const destFile = path.join(dirs.destDir, "a.txt");
+    await mkdir(dirs.destDir, { recursive: true });
+    await writeFile(srcFile, "hello");
+    await writeFile(destFile, "hello");
+
+    const missingSourceError = Object.assign(new Error("source file missing"), { code: "ENOENT" });
+    state.statOverride = makeStatErrorOverride(srcFile, missingSourceError, await getRealStat());
+
+    await expect(defaultOnCheckChangedAsync(srcFile, destFile, opts())).rejects.toThrow(
+      "source file missing",
+    );
+  });
+
   it("returns true when the dest file's size differs", async () => {
     dirs = await createTempDirs();
     const srcFile = path.join(dirs.srcDir, "a.txt");
@@ -152,6 +168,24 @@ describe("defaultOnCheckChanged", () => {
     expect(changed).toBe(true);
   });
 
+  it("rethrows an ENOENT error when the src file does not exist", async () => {
+    dirs = await createTempDirs();
+    const srcFile = path.join(dirs.srcDir, "a.txt");
+    const destFile = path.join(dirs.destDir, "a.txt");
+    await mkdir(dirs.destDir, { recursive: true });
+    await writeFile(srcFile, "hello");
+    await writeFile(destFile, "hello");
+
+    const missingSourceError = Object.assign(new Error("source file missing"), { code: "ENOENT" });
+    state.statSyncOverride = makeStatSyncErrorOverride(
+      srcFile,
+      missingSourceError,
+      await getRealStatSync(),
+    );
+
+    expect(() => defaultOnCheckChanged(srcFile, destFile, opts())).toThrow("source file missing");
+  });
+
   it("returns true when the dest file's size differs", async () => {
     dirs = await createTempDirs();
     const srcFile = path.join(dirs.srcDir, "a.txt");
@@ -214,9 +248,7 @@ describe("defaultOnClearDest", () => {
     const logger = createMockLogger();
     defaultOnClearDest(["/dest/*", "!/dest/keep.txt"], opts({ logLevel: "verbose", logger }));
 
-    expect(logger.verbose).toHaveBeenCalledWith(
-      expect.stringContaining("/dest/*,!/dest/keep.txt"),
-    );
+    expect(logger.verbose).toHaveBeenCalledWith(expect.stringContaining("/dest/*,!/dest/keep.txt"));
   });
 
   it("does not log when logLevel is less permissive than verbose (the default, info)", () => {
@@ -279,4 +311,3 @@ describe("defaultOnFinish", () => {
     expect(logger.info).toHaveBeenCalledWith("3 file(s) copied, 0 file(s) skipped.");
   });
 });
-

@@ -9,9 +9,9 @@ It compares file modification time and size to determine whether a file should b
 - Glob support using **[tinyglobby](https://github.com/SuperchupuDev/tinyglobby)**.
 - Preserves relative directory structure by finding each pattern's common glob parent, using **[common-path-prefix](https://github.com/novemberborn/common-path-prefix)**.
 - Selective destination clearing with glob support.
-- Dry-run mode to preview what would be copied/cleared without touching the filesystem.
+- Dry-run mode to preview copy results without modifying the filesystem.
 - Pluggable logging using [`@wicle/tiny-logger`](https://github.com/shnam7/tiny-logger)'s `Logger` interface (a `ts-log`-compatible interface with an added `verbose` level).
-- Customizable via hooks - override change detection, or add your own logging/side effects.
+- Customize behavior with hooks: override change detection or add custom logging and side effects.
 - Safe for concurrent calls.
 
 ## Installation
@@ -129,6 +129,7 @@ Alias for `copyChangedAsync()`.
 ```ts
 interface CopyOptions {
   cwd?: string;
+  destType?: "auto" | "file" | "directory";
   clearDest?: boolean | string | readonly string[];
   force?: boolean;
   logger?: Logger; // from `@wicle/tiny-logger` - extends `ts-log`'s Logger with a `verbose` method
@@ -145,10 +146,17 @@ interface CopyOptions {
 
 - **cwd**: Base directory for resolving paths. Defaults to `process.cwd()`.
 
+- **destType**: Controls how `dest` is interpreted.
+  - `"auto"`: Uses the existing filesystem and extension-based detection.
+  - `"file"`: Treats `dest` as a file, including a new file without an extension or a path ending in `/` or `\\`. Trailing separators are normalized away, so `"output/"` is treated as the file `"output"`; copying fails if that resolved path is an existing directory.
+  - `"directory"`: Treats `dest` as a directory, regardless of its name or extension.
+  - Default: `"auto"`.
+
 - **clearDest**:
   - `true`: empties the destination directory.
   - `string | string[]`: glob(s) relative to `dest` - deletes only the matched files.
   - If `dest` resolves to a single file, this deletes that file before copying - note that if `src` doesn't match anything, `dest` is left deleted with nothing to replace it.
+  - When `dryRun` is `true`, the deletion is skipped but `onClearDest` still runs.
   - Default: `false`
 
 - **force**: If `true`, always overwrite destination files.
@@ -157,7 +165,7 @@ interface CopyOptions {
 - **logger**: A [`@wicle/tiny-logger`](https://github.com/shnam7/tiny-logger) `Logger` - `ts-log`'s interface (`trace`/`debug`/`info`/`warn`/`error`/`fatal`) plus a required `verbose` method - used by the default hooks below to print `logLevel` output. A plain `ts-log` logger (e.g. `console`) doesn't satisfy this by itself; wrap it with tiny-logger's `withVerbose()` helper to add a `verbose` method. Falls back to a shared, lazily-created default logger if you don't supply one - it's only constructed once per process, not once per call.
   - Default: the shared default logger (see [Logging](#logging)).
 
-- **logLevel**: Controls logging verbosity. Accepts one of pino's levels (`"trace"`/`"debug"`/`"info"`/`"warn"`/`"error"`/`"fatal"`), tiny-logger's custom `"verbose"` level, or `"silent"` to disable logging entirely.
+- **logLevel**: Controls logging verbosity. Accepts one of `@wicle/tiny-logger`'s log levels (`"trace"`/`"debug"`/`"verbose"`/`"info"`/`"warn"`/`"error"`/`"fatal"`), or `"silent"` to disable logging entirely.
   - `"verbose"`: detailed per-file logs (`onCopy`/`onSkip`/`onClearDest` messages)
   - `"info"`: summary only (the `onFinish` message)
   - `"silent"`: no logs
@@ -166,8 +174,7 @@ interface CopyOptions {
 
 - **globOptions**: Options passed through to tinyglobby.
 
-- **dryRun**: If `true`, skips every filesystem mutation - `clearDest`'s delete, `mkdir`, and the actual file copy - while still running change detection, hooks, and returning the `CopyResult` that describes what would have happened.
-  - Caveat: when combined with `clearDest`, the preview does not simulate the deletion - `onCheckChanged` still compares against files that are still on disk, so a file that `clearDest` would remove (and thus force a real copy for) may be reported as "skipped" here.
+- **dryRun**: If `true`, skips every built-in filesystem mutation - `clearDest`'s delete, `mkdir`, and the actual file copy - while still running change detection, hooks, logging, and returning the `CopyResult` that describes what would have happened.
   - Default: `false`
 
 - **onCheckChanged**, **onClearDest**, **onCopy**, **onSkip**, **onFinish**: optional hooks. See [Hooks](#hooks).
@@ -226,14 +233,14 @@ Available as `defaultOnCheckChanged` (for `copyChangedSync`), `defaultOnCheckCha
 
 ### Sync API hook constraints
 
-`copyChangedSync`'s hooks are typed the same as `copyChangedAsync`'s (`T | Promise<T>`), so passing an async hook isn't a type error - but `copyChangedSync` cannot await one. If a hook declared with the `async` keyword is passed to `copyChangedSync`, its result is ignored, and a warning is logged once per hook, upfront, before any files are processed:
+`copyChangedSync`'s hooks are typed the same as `copyChangedAsync`'s (`T | Promise<T>`), so passing an async hook isn't a type error - but `copyChangedSync` cannot await one. An async `onCheckChanged` returns a Promise rather than a boolean, so it is treated as `false`; the result of any other async hook is ignored. A warning is logged once per hook, upfront, before any files are processed:
 
 ```ts
 copyChangedSync("src/**/*.js", "dist", {
-  onCheckChanged: async (srcFile, destFile) => checkRemotely(srcFile, destFile), // ⚠️ warned and ignored
+  onCheckChanged: async (srcFile, destFile) => checkRemotely(srcFile, destFile), // warned and treated as false
 });
 // logs: copyChangedSync: 'onCheckChanged' is an async function, but copyChangedSync
-// cannot await hooks - its result will be ignored. Pass a synchronous hook when
+// cannot await hooks - its return value is treated as false. Pass a synchronous hook when
 // using copyChangedSync.
 ```
 
@@ -280,9 +287,9 @@ The default logger's output (shown in the [example below](#example-output-verbos
 ## Notes
 
 - If `dest` is a file, `src` must be a single non-glob file.
-- If `dest` does not exist on the filesystem, it is treated as a directory if it has no extension or ends with `/`.
+- In `"auto"` mode, a `dest` ending in `/` or `\\` is treated as a directory. A non-existent destination without an extension is also treated as a directory.
+- Set `destType: "file"` or `destType: "directory"` to override automatic destination detection, including trailing slash detection.
 - If `dest` resolves to a single file, `clearDest` deletes that file before copying (see the `clearDest` option above).
-- Files without an extension may be misclassified as directories if they do not exist yet.
 
 Handling the `dest` argument:
 
@@ -290,19 +297,23 @@ Handling the `dest` argument:
 // copy src/a.txt to dest directory. If dest does not exist, it is created.
 copyChangedAsync("src/a.txt", "dest/");
 
-// If dest is an existing directory, then copy src/a.txt to dest/.
-// If dest is not an existing directory, then copy src/a.txt to 'dest' as a file.
+// If dest is an existing directory, copy src/a.txt to dest/.
+// Otherwise, copy src/a.txt to 'dest' as a file.
 copyChangedAsync("src/a.txt", "dest");
 
 // dest.txt is always treated as a file, because it has an extension.
 copyChangedAsync("src/a.txt", "dest.txt");
+
+// Explicit destType takes precedence over automatic detection.
+// The trailing slash is normalized away, so this writes to the file "dest".
+copyChangedAsync("src/a.txt", "dest/", { destType: "file" });
 ```
 
 ## Example Output (verbose mode)
 
 ```sh
-10:32:19 AM INFO Copy: src/app.js -> dist/app.js
-10:32:19 AM INFO Skip: src/util.js -> dist/util.js
+10:32:19 AM VERBOSE Copy: src/app.js -> dist/app.js
+10:32:19 AM VERBOSE Skip: src/util.js -> dist/util.js
 10:32:19 AM INFO 1 file(s) copied, 1 file(s) skipped.
 ```
 
