@@ -86,7 +86,7 @@ See [Sync API hook constraints](#sync-api-hook-constraints) for how it handles h
 
 ## API
 
-### `copyChangedAsync(src, dest, options)`
+### copyChangedAsync(src, dest, options)
 
 Copies files matching `src` patterns into `dest`.
 Only files that have changed (by modification time or size) are copied.
@@ -101,7 +101,7 @@ Only files that have changed (by modification time or size) are copied.
 - **options**: `CopyOptions` (optional)
   See below.
 
-### `copyChangedAsync(params, defaultOptions?)`
+### copyChangedAsync(params, defaultOptions?)
 
 Accepts a single `CopyParam` object or an array of them:
 
@@ -116,15 +116,18 @@ interface CopyParam {
 - **params**: A single `CopyParam` or `CopyParam[]`.
 - **defaultOptions**: `CopyOptions` (optional) - merged into every param's `options`. Where the two overlap, the param's own `options` wins (see [Multiple Copy Tasks](#multiple-copy-tasks)).
 
-### `copyChangedSync(src, dest, options)` / `copyChangedSync(params, defaultOptions?)`
+### copyChangedSync
+
+- `copyChangedSync(src, dest, options)`
+- `copyChangedSync(params, defaultOptions?)`
 
 Synchronous counterpart of `copyChangedAsync` above with the same interface.
 
-### `copyChanged()`
+### copyChanged()
 
 Alias for `copyChangedAsync()`.
 
-### `CopyOptions`
+### CopyOptions
 
 ```ts
 interface CopyOptions {
@@ -179,7 +182,7 @@ interface CopyOptions {
 
 - **onCheckChanged**, **onClearDest**, **onCopy**, **onSkip**, **onFinish**: optional hooks. See [Hooks](#hooks).
 
-### `CopyResult`
+### CopyResult
 
 Returned by `copyChangedAsync` (as a `Promise<CopyResult>`) and `copyChangedSync` (directly):
 
