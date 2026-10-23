@@ -35,13 +35,13 @@
     "test": "vitest run --coverage",
     "test:watch": "vitest watch --coverage",
     "clean": "rimraf ./dist ./coverage",
+    "rebuild": "run-s clean build",
+    "prepare-to-commit": "run-s clean lint test build clean",
     "prepublishOnly": "bun run build",
     "npm-dry-run": "npm publish --dry-run",
-    "rebuild": "run-s clean build",
-    "reset": "npm-run-all clean --parallel reset:*",
+    "reset": "run-s clean reset:turbo reset:node",
     "reset:turbo": "find . -type d -name .turbo -exec rm -rf {} +",
-    "reset:node": "find . -type d -name node_modules -exec rm -rf {} +",
-    "prepare-to-commit": "run-s lint test build clean"
+    "reset:node": "find . -type d -name node_modules -exec rm -rf {} +"
   },
   "repository": {
     "type": "git",
@@ -63,21 +63,21 @@
   "dependencies": {
     "@wicle/tiny-logger": "^0.11.1",
     "common-path-prefix": "^3.0.0",
-    "del": "^8.0.1",
+    "del": "^9.0.1",
     "glob-parent": "^6.0.2",
     "tinyglobby": "^0.2.17"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.12",
-    "@changesets/cli": "^3.0.2",
+    "@biomejs/biome": "^2.6.2",
+    "@changesets/cli": "^3.0.3",
     "@types/glob-parent": "^5.1.3",
-    "@types/node": "^26.4.1",
-    "@vitest/coverage-v8": "^5.0.0",
-    "npm-run-all2": "^9.0.3",
+    "@types/node": "^26.6.5",
+    "@vitest/coverage-v8": "^5.0.5",
+    "npm-run-all2": "^9.0.4",
     "rimraf": "^6.1.3",
-    "tsdown": "^0.23.0",
+    "tsdown": "^0.23.2",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.5"
   },
-  "packageManager": "bun@1.4.1"
+  "packageManager": "bun@1.4.4"
 }

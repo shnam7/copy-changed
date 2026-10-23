@@ -90,7 +90,6 @@ See [Sync API hook constraints](#sync-api-hook-constraints) for how it handles h
 
 Copies files matching `src` patterns into `dest`.
 Only files that have changed (by modification time or size) are copied.
-
 - **src**: `string | string[]`
   Glob pattern(s) or file path(s).
   If `dest` is a single file, `src` must be a single non-glob file.
@@ -139,10 +138,22 @@ interface CopyOptions {
   logLevel?: "trace" | "debug" | "verbose" | "info" | "warn" | "error" | "fatal" | "silent";
   globOptions?: GlobOptions;
   dryRun?: boolean;
-  onCheckChanged?: (srcFile: string, destFile: string, options: Required<CopyOptions>) => boolean | Promise<boolean>;
+  onCheckChanged?: (
+    srcFile: string,
+    destFile: string,
+    options: Required<CopyOptions>,
+  ) => boolean | Promise<boolean>;
   onClearDest?: (delPatterns: string[], options: Required<CopyOptions>) => void | Promise<void>;
-  onCopy?: (srcFile: string, destFile: string, options: Required<CopyOptions>) => void | Promise<void>;
-  onSkip?: (srcFile: string, destFile: string, options: Required<CopyOptions>) => void | Promise<void>;
+  onCopy?: (
+    srcFile: string,
+    destFile: string,
+    options: Required<CopyOptions>,
+  ) => void | Promise<void>;
+  onSkip?: (
+    srcFile: string,
+    destFile: string,
+    options: Required<CopyOptions>,
+  ) => void | Promise<void>;
   onFinish?: (result: CopyResult, options: Required<CopyOptions>) => void | Promise<void>;
 }
 ```
